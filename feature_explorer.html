@@ -1413,9 +1413,10 @@ function renderLightCurve() {
     if (!isFinite(d.mjd)) return false;
     if (useFlux) return useSci ? (d.scienceFlux != null && isFinite(d.scienceFlux))
                                : (d.psfFlux     != null && isFinite(d.psfFlux));
-    // Magnitude mode
-    return useSci ? (d.mag_corr != null && isFinite(d.mag_corr))
-                  : (d.mag      != null && isFinite(d.mag));
+    // Magnitude mode — science: require valid e_mag_corr (same guard as normalizeDet scienceFlux)
+    return useSci ? (d.mag_corr  != null && isFinite(d.mag_corr)
+                     && d.e_mag_corr != null && d.e_mag_corr > 0 && d.e_mag_corr < 1.0)
+                  : (d.mag       != null && isFinite(d.mag));
   });
 
   // Fold: compute phase relative to first detection, show two cycles
