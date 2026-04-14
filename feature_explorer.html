@@ -19,7 +19,7 @@
   --accent:       #58a6ff;
   --accent-hover: #79c0ff;
   --accent-dim:   #1f6feb33;
-  --sidebar-width:300px;
+  --sidebar-width:440px;
   --right-width:  380px;
   --header-height:44px;
 }
@@ -73,7 +73,7 @@ body {
 /* SIDEBAR */
 .sidebar {
   width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
+  min-width: 280px;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
   overflow-y: auto;
@@ -208,8 +208,8 @@ select option { background: var(--bg-tertiary); }
 .feature-item:hover { background: var(--bg-card); color: var(--text-primary); }
 .feature-item.on { color: var(--text-primary); }
 .feature-item input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; width: auto; }
-.feat-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.xform-btns { display: flex; gap: 2px; flex-shrink: 0; margin-left: auto; }
+.feat-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xform-btns { display: flex; gap: 2px; flex-shrink: 0; }
 .xform-btn {
   padding: 0px 4px;
   border: 1px solid var(--border);
@@ -224,6 +224,27 @@ select option { background: var(--bg-tertiary); }
 }
 .xform-btn:hover { border-color: var(--accent); color: var(--accent); }
 .xform-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.show-btn {
+  padding: 0 3px; border: 1px solid var(--border); border-radius: 3px;
+  background: transparent; color: var(--text-muted); font-size: 9px;
+  cursor: pointer; line-height: 14px; flex-shrink: 0; transition: all 0.12s;
+}
+.show-btn:hover { border-color: var(--accent); color: var(--accent); }
+.show-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+.feat-filters { display: flex; gap: 2px; flex-shrink: 0; }
+input.feat-filter {
+  width: 36px; height: 16px; padding: 0 2px;
+  font-size: 9px; font-family: monospace; line-height: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 3px; outline: none;
+  transition: border-color 0.12s;
+}
+input.feat-filter:focus { border-color: var(--accent); }
+input.feat-filter.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
 
 /* MAIN */
 .main-content {
@@ -469,6 +490,7 @@ select option { background: var(--bg-tertiary); }
         <button class="btn sm" onclick="selectAll(true)">All</button>
         <button class="btn sm" onclick="selectAll(false)">None</button>
         <button class="btn sm" onclick="selectDefaults()">Default</button>
+        <button class="btn sm" id="btn-show-selected" onclick="toggleShowSelected()" title="Show only features selected for the pair plot" style="margin-left:auto;">Show selected</button>
       </div>
       <input id="feat-search" type="search" placeholder="Search features…"
              style="width:100%;box-sizing:border-box;margin-bottom:6px;padding:4px 7px;font-size:11px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);outline:none;"
@@ -486,6 +508,8 @@ select option { background: var(--bg-tertiary); }
     </div>
 
   </div><!-- /sidebar -->
+
+  <div class="resizer" id="sidebar-resizer"></div>
 
   <!-- PAIR PLOT -->
   <div class="main-content" id="main-content">
@@ -533,12 +557,17 @@ select option { background: var(--bg-tertiary); }
         <i class="fa-solid fa-wave-square"></i> Light Curve
         <span style="margin-left:auto;display:flex;gap:3px;">
           <button class="ptb-btn active" id="lc-btn-mag"  onclick="toggleLCFluxMode(false)" title="Show magnitude"  style="width:auto;padding:0 6px;font-size:10px;height:22px;">Mag</button>
-          <button class="ptb-btn"        id="lc-btn-flux" onclick="toggleLCFluxMode(true)"  title="Show flux in nJy" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Flux</button>
+          <button class="ptb-btn"        id="lc-btn-flux" onclick="toggleLCFluxMode(true)"  title="Show flux in µJy" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Flux</button>
           <button class="ptb-btn"        id="lc-btn-sci"  onclick="toggleLCSciMode()"       title="Switch between difference image and science (corrected) image — ZTF only" style="width:auto;padding:0 6px;font-size:10px;height:22px;display:none;">Diff</button>
           <button class="ptb-btn"        id="lc-btn-fold" onclick="toggleLCFoldMode()"      title="Fold by period"  style="width:auto;padding:0 6px;font-size:10px;height:22px;margin-left:4px;"><i class="fa-solid fa-rotate"></i> Fold</button>
+          <select id="lc-overlay-sel" onchange="toggleLCOverlay(this.value)" title="Parametric model overlay" style="margin-left:6px;height:22px;font-size:10px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:0 4px;cursor:pointer;">
+            <option value="none">— overlay —</option>
+            <option value="spm">SPM</option>
+          </select>
         </span>
       </div>
       <div id="lc-period-info" style="display:none;font-size:10px;color:var(--text-secondary);padding:1px 12px 3px;flex-shrink:0;"></div>
+      <div id="lc-spm-info"    style="display:none;font-size:10px;color:var(--text-secondary);padding:1px 12px 4px;flex-shrink:0;font-family:monospace;line-height:1.6;"></div>
       <div id="selected-info">Click a point in the pair plot to load details.</div>
       <div id="lc-div"></div>
     </div>
@@ -593,6 +622,7 @@ const SURVEY_CONFIG = {
     extraParams(p) {
       p.delete('survey');
       if (p.has('class_name')) { p.set('class', p.get('class_name')); p.delete('class_name'); }
+      if (p.has('n_det')) { p.set('ndet', p.get('n_det')); p.delete('n_det'); }
       p.set('ranking', '1');
       p.set('order_by', 'probability');
       p.set('order_mode', 'DESC');
@@ -607,7 +637,7 @@ const CLASS_PALETTE = [
   '#db61a2','#54aeff','#26a641','#ffa198',
 ];
 
-const ABZP = 23.9;  // AB zero-point in nJy: flux(nJy) = 10^((23.9 - mag) / 2.5)
+const ABZP = 23.9;  // AB zero-point for microjansky: flux(µJy) = 10^((23.9 - mag) / 2.5)
 
 const BAND_COLORS = {
   g:'#009E73', r:'#D55E00', i:'#E69F00',
@@ -639,10 +669,14 @@ let classifierClasses = {};  // classifierName → Set<className>
 let featureTransforms = {};  // featureName → 'log' | 'asinh' | null
 
 let scatterTraceIdxs  = []; // trace indices of scatter subplots (for multi-trace selectedpoints)
-let lcFluxMode        = false;  // false = magnitude, true = flux (nJy)
+let lcFluxMode        = false;  // false = magnitude, true = flux (µJy)
 let lcFoldMode        = false;  // true = fold by period
 let useScienceFlux    = false;  // true = science (corrected) flux, false = difference flux
 let currentDetections = [];     // cached detections for the selected object (avoids re-fetch on toggle)
+let lcOverlay         = null;   // null | 'spm' — parametric model overlay on the light curve
+let featureFilters    = {};     // featureName → { min: number|null, max: number|null }
+let plotObjIdx        = null;   // maps plot-space point index → objectsData index (null = identity)
+let showOnlySelected  = false;  // when true, feature list shows only checked features
 let pendingRestore    = null;   // decoded URL state waiting to be applied after classifiers/features load
 let aladinInstance = null;
 let aladinCat      = null;
@@ -814,7 +848,7 @@ async function runQuery() {
   setQueryStep('Querying objects…');
   setStatus('Querying objects…');
 
-  const cfg = SC();
+  const cfg      = SC();
   const pageSize = doSamp ? Math.min(N * 4, 100) : 50;
   let allObjects = [];
 
@@ -833,7 +867,7 @@ async function runQuery() {
       if (clf) p.set('classifier', clf);
       p.set('class_name', cls);
       if (prob) p.set('probability', prob);
-      if (ndet) p.append('n_det', ndet);  // API expects n_det repeated for [min, max]; one value = min only
+      if (ndet) p.set('n_det', ndet);  // ZTF extraParams renames this to 'ndet'; LSST uses 'n_det'
       cfg.extraParams(p);
 
       const r = await fetch(cfg.objectsUrl(p.toString()));
@@ -951,6 +985,7 @@ function buildFeatureListUI() {
   document.getElementById('feat-section').style.display = '';
   document.getElementById('feat-count').textContent = `(${allFeatureNames.length})`;
   featureTransforms = {};
+  featureFilters    = {};
   const container = document.getElementById('feature-list');
   container.innerHTML = '';
   allFeatureNames.forEach(name => {
@@ -961,12 +996,46 @@ function buildFeatureListUI() {
     const chk = document.createElement('input');
     chk.type = 'checkbox'; chk.value = name;
     if (checked) chk.checked = true;
-    chk.addEventListener('change', e => item.classList.toggle('on', e.target.checked));
+    chk.addEventListener('change', e => {
+      item.classList.toggle('on', e.target.checked);
+      if (e.target.checked) showBtn.classList.add('active');
+      if (showOnlySelected) filterFeatureList(document.getElementById('feat-search').value);
+    });
+
+    const showBtn = document.createElement('button');
+    showBtn.className = 'show-btn' + (checked ? ' active' : '');
+    showBtn.title = 'Show as pair plot axis';
+    showBtn.dataset.name = name;
+    showBtn.innerHTML = '<i class="fa-solid fa-eye"></i>';
+    showBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      showBtn.classList.toggle('active');
+      if (getSelectedFeatures().length >= 2 && objectsData.length > 0) buildPairPlot();
+    });
 
     const label = document.createElement('span');
     label.className = 'feat-name';
     label.textContent = name;
     label.title = name;
+
+    // Min / max filter inputs
+    const filters = document.createElement('span');
+    filters.className = 'feat-filters';
+    ['min', 'max'].forEach(bound => {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.placeholder = bound;
+      inp.className = `feat-filter feat-filter-${bound}`;
+      inp.title = `Filter: ${bound === 'min' ? '≥' : '≤'} value`;
+      inp.addEventListener('input', e => {
+        e.stopPropagation();
+        const v = inp.value !== '' ? parseFloat(inp.value) : null;
+        if (!featureFilters[name]) featureFilters[name] = { min: null, max: null };
+        featureFilters[name][bound] = v;
+        inp.classList.toggle('active', v != null);
+      });
+      inp.addEventListener('click', e => e.stopPropagation());
+      filters.appendChild(inp);
+    });
 
     const btns = document.createElement('span');
     btns.className = 'xform-btns';
@@ -981,7 +1050,6 @@ function buildFeatureListUI() {
         const current = featureTransforms[name];
         const next = current === xf ? null : xf;
         featureTransforms[name] = next;
-        // Update button states for this feature
         btns.querySelectorAll('.xform-btn').forEach(btn => {
           btn.classList.toggle('active', btn.textContent === next);
         });
@@ -990,13 +1058,18 @@ function buildFeatureListUI() {
     });
 
     item.appendChild(chk);
+    item.appendChild(showBtn);
     item.appendChild(label);
     item.appendChild(btns);
-    // Clicking the row (not a button) toggles the checkbox
+    item.appendChild(filters);
+    // Clicking the row (not a button/input) toggles the checkbox
     item.addEventListener('click', e => {
-      if (e.target === chk || e.target.classList.contains('xform-btn')) return;
+      if (e.target === chk || e.target.classList.contains('xform-btn')
+          || e.target.classList.contains('feat-filter')
+          || e.target.closest('.show-btn')) return;
       chk.checked = !chk.checked;
       item.classList.toggle('on', chk.checked);
+      if (chk.checked) showBtn.classList.add('active');
     });
     container.appendChild(item);
   });
@@ -1005,14 +1078,28 @@ function buildFeatureListUI() {
     const state = pendingRestore;
     pendingRestore = null;
 
-    // Restore which features are checked
+    // Restore which features are checked / shown
     if (state.features && state.features.length > 0) {
       const wanted = new Set(state.features);
       document.querySelectorAll('#feature-list .feature-item').forEach(item => {
-        const chk = item.querySelector('input');
-        const on = wanted.has(chk.value);
-        chk.checked = on;
-        item.classList.toggle('on', on);
+        const chk = item.querySelector('input[type="checkbox"]');
+        const on = wanted.has(chk?.value);
+        if (chk) { chk.checked = on; item.classList.toggle('on', on); }
+        item.querySelector('.show-btn')?.classList.toggle('active', on);
+      });
+    }
+
+    // Restore feature filters
+    if (state.filters) {
+      featureFilters = state.filters;
+      document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+        const name = item.querySelector('input[type="checkbox"]')?.value;
+        if (!name || !featureFilters[name]) return;
+        const { min, max } = featureFilters[name];
+        const minInp = item.querySelector('.feat-filter-min');
+        const maxInp = item.querySelector('.feat-filter-max');
+        if (minInp && min != null) { minInp.value = min; minInp.classList.add('active'); }
+        if (maxInp && max != null) { maxInp.value = max; maxInp.classList.add('active'); }
       });
     }
 
@@ -1049,9 +1136,12 @@ function buildFeatureListUI() {
         lcFluxMode     = !!state.lcFlux;
         useScienceFlux = !!state.lcSci;
         lcFoldMode     = !!state.lcFold;
+        lcOverlay      = state.lcOverlay || null;
         document.getElementById('lc-btn-mag').classList.toggle('active',  !lcFluxMode);
         document.getElementById('lc-btn-flux').classList.toggle('active',  lcFluxMode);
         document.getElementById('lc-btn-fold').classList.toggle('active',  lcFoldMode);
+        const overlaySel = document.getElementById('lc-overlay-sel');
+        if (overlaySel) overlaySel.value = lcOverlay || 'none';
         const sciBtn = document.getElementById('lc-btn-sci');
         sciBtn.textContent = useScienceFlux ? 'Sci' : 'Diff';
         sciBtn.classList.toggle('active', useScienceFlux);
@@ -1063,28 +1153,51 @@ function buildFeatureListUI() {
 
 function filterFeatureList(query) {
   const q = query.trim().toLowerCase();
+  let textTest;
+  if (!q) {
+    textTest = () => true;
+  } else if (q.includes('*') || q.includes('?')) {
+    const re = new RegExp('^' + q.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                                  .replace(/\*/g, '.*')
+                                  .replace(/\?/g, '.') + '$');
+    textTest = name => re.test(name.toLowerCase());
+  } else {
+    textTest = name => name.toLowerCase().includes(q);
+  }
   document.querySelectorAll('#feature-list .feature-item').forEach(item => {
-    const name = item.querySelector('input')?.value ?? '';
-    item.style.display = (!q || name.toLowerCase().includes(q)) ? '' : 'none';
+    const chk  = item.querySelector('input[type="checkbox"]');
+    const name = chk?.value ?? '';
+    const passText     = textTest(name);
+    const passSelected = !showOnlySelected || chk?.checked;
+    item.style.display = (passText && passSelected) ? '' : 'none';
   });
 }
 
+function toggleShowSelected() {
+  showOnlySelected = !showOnlySelected;
+  const btn = document.getElementById('btn-show-selected');
+  btn.classList.toggle('active', showOnlySelected);
+  filterFeatureList(document.getElementById('feat-search').value);
+}
+
 function getSelectedFeatures() {
-  return [...document.querySelectorAll('#feature-list input:checked')].map(i => i.value);
+  return [...document.querySelectorAll('#feature-list .show-btn.active')].map(b => b.dataset.name);
 }
 
 function selectAll(state) {
-  document.querySelectorAll('#feature-list input').forEach(i => {
-    i.checked = state;
-    i.parentElement.classList.toggle('on', state);
+  document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+    const chk = item.querySelector('input[type="checkbox"]');
+    if (chk) { chk.checked = state; item.classList.toggle('on', state); }
+    item.querySelector('.show-btn')?.classList.toggle('active', state);
   });
 }
 
 function selectDefaults() {
-  document.querySelectorAll('#feature-list input').forEach(i => {
-    const on = DEFAULT_FEATURES.includes(i.value);
-    i.checked = on;
-    i.parentElement.classList.toggle('on', on);
+  document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+    const chk = item.querySelector('input[type="checkbox"]');
+    const on = DEFAULT_FEATURES.includes(chk?.value);
+    if (chk) { chk.checked = on; item.classList.toggle('on', on); }
+    item.querySelector('.show-btn')?.classList.toggle('active', on);
   });
 }
 
@@ -1158,11 +1271,27 @@ function buildPairPlot() {
   const xRef = i => i === 1 ? 'x'      : `x${i}`;
   const yRef = i => i === 1 ? 'y'      : `y${i}`;
 
+  // ── Apply feature filters to get the plotted subset ──
+  let plotEntries = objectsData.map((obj, i) => ({ obj, i }));
+  for (const [feat, bounds] of Object.entries(featureFilters)) {
+    const { min, max } = bounds;
+    if (min == null && max == null) continue;
+    plotEntries = plotEntries.filter(({ obj }) => {
+      const v = featuresData[obj.oid]?.[feat];
+      if (v == null || !isFinite(v)) return false;
+      if (min != null && v < min) return false;
+      if (max != null && v > max) return false;
+      return true;
+    });
+  }
+  const plotObjects = plotEntries.map(e => e.obj);
+  plotObjIdx = plotEntries.map(e => e.i);
+
   // ── Pre-transform all feature value arrays ──
   const valCache = {};
   features.forEach(f => {
     const xf = featureTransforms[f] || null;
-    valCache[f] = objectsData.map(obj => {
+    valCache[f] = plotObjects.map(obj => {
       const v = featuresData[obj.oid]?.[f];
       return (v != null && isFinite(v)) ? applyTransform(v, xf) : null;
     });
@@ -1219,7 +1348,7 @@ function buildPairPlot() {
           const cls   = selectedClasses[ci];
           const color = classColorMap[cls] || CLASS_PALETTE[ci];
           const vals  = valCache[features[r]].filter(
-            (v, vi) => v != null && objectsData[vi].class_name === cls
+            (v, vi) => v != null && plotObjects[vi].class_name === cls
           );
           const kde = gaussianKDE(vals);
           if (!kde) continue;
@@ -1240,12 +1369,12 @@ function buildPairPlot() {
           x: valCache[features[c]], y: valCache[features[r]],
           xaxis: xRef(i), yaxis: yRef(i),
           marker: {
-            color: objectsData.map(obj => classColorMap[obj.class_name] || '#58a6ff'),
+            color: plotObjects.map(obj => classColorMap[obj.class_name] || '#58a6ff'),
             size: 5, opacity: 0.75, line: { width: 0 },
           },
           selected:   { marker: { color: '#fff700', size: 9, opacity: 1.0, line: { color: '#fff', width: 1 } } },
           unselected: { marker: { opacity: 0.40 } },
-          text: objectsData.map(obj =>
+          text: plotObjects.map(obj =>
             `<b>${obj.oid}</b><br>Class: ${obj.class_name || '?'}<br>` +
             `P=${obj.probability != null ? obj.probability.toFixed(3) : '?'}`
           ),
@@ -1266,25 +1395,28 @@ function buildPairPlot() {
         if (!data || !data.points || !data.points.length) return;
         const pt = data.points[0];
         if (!pt.data || pt.data.mode !== 'markers') return; // skip KDE line clicks
-        const idx = pt.pointIndex;
-        if (idx == null) return;
-        highlightPoints([idx]);
-        onPointSelected(idx, true);
+        const plotIdx = pt.pointIndex;
+        if (plotIdx == null) return;
+        highlightPoints([plotIdx]);
+        onPointSelected(plotObjIdx ? plotObjIdx[plotIdx] : plotIdx, true);
       });
       plotDiv.on('plotly_selected', data => {
         if (!data || !data.points) return;
         const mPts = data.points.filter(p => p.data && p.data.mode === 'markers');
         if (!mPts.length) return;
-        const idxs = [...new Set(mPts.map(p => p.pointIndex))];
-        highlightPoints(idxs);
-        onPointSelected(idxs[0], true);
-        if (idxs.length > 1) setStatus(`${idxs.length} points selected. Showing ${objectsData[idxs[0]].oid}.`);
+        const plotIdxs = [...new Set(mPts.map(p => p.pointIndex))];
+        highlightPoints(plotIdxs);
+        const globalIdx0 = plotObjIdx ? plotObjIdx[plotIdxs[0]] : plotIdxs[0];
+        onPointSelected(globalIdx0, true);
+        if (plotIdxs.length > 1) setStatus(`${plotIdxs.length} points selected. Showing ${objectsData[globalIdx0].oid}.`);
       });
       plotDiv.on('plotly_doubleclick', () => { highlightPoints(null); selectedIdx = null; });
     });
 
   renderClassLegend();
-  setStatus(`Pair plot: ${objectsData.length} objects × ${n} features. Click a point to select it.`);
+  const filteredMsg = plotObjects.length < objectsData.length
+    ? ` (${plotObjects.length} of ${objectsData.length} after filters)` : '';
+  setStatus(`Pair plot: ${plotObjects.length} objects × ${n} features${filteredMsg}. Click a point to select it.`);
 }
 
 // Apply selectedpoints highlight to all scatter subplots simultaneously.
@@ -1296,7 +1428,10 @@ function highlightPoints(idxs) {
 
 function onPointSelected(idx, keepPlotlySelection) {
   selectedIdx = idx;
-  if (!keepPlotlySelection) highlightPoints([idx]);
+  if (!keepPlotlySelection) {
+    const plotIdx = plotObjIdx ? plotObjIdx.indexOf(idx) : idx;
+    if (plotIdx >= 0) highlightPoints([plotIdx]);
+  }
 
   const obj   = objectsData[idx];
   const color = classColorMap[obj.class_name] || '#58a6ff';
@@ -1321,7 +1456,7 @@ function normalizeDet(d) {
   if (!d.band_name) {
     d.band_name = d.band ?? (fid && d.fid != null ? (fid[d.fid] || `fid${d.fid}`) : 'unknown');
   }
-  // Difference flux (nJy) — accept from API (LSST psfFlux) or derive from difference-image magnitude
+  // Difference flux (µJy) — accept from API (LSST psfFlux) or derive from difference-image magnitude
   if (d.psfFlux == null) {
     d.psfFlux    = (d.mag   != null && isFinite(d.mag))   ? Math.pow(10, (ABZP - d.mag)   / 2.5) : null;
     d.psfFluxErr = (d.e_mag != null && d.psfFlux != null) ? d.psfFlux * d.e_mag * Math.LN10 / 2.5 : null;
@@ -1398,6 +1533,111 @@ async function loadObjectDetail(obj) {
   }
 }
 
+// ── SPM PARAMETRIC OVERLAY ────────────────────────────────────────────────────
+
+// Sánchez-Sáez+2021 Eq. A5 — Stochastic-Parametric Model (SPM)
+// t     : time in days relative to the first detection of the source
+// A     : flux amplitude
+// beta  : plateau ratio (0 < beta < 1)
+// t0    : onset time (days, relative to first detection)
+// gamma : rise duration (t1 = t0 + gamma)
+// tau_rise, tau_fall : rise/fall timescales (days)
+function spmFlux(t, A, beta, t0, gamma, tau_rise, tau_fall) {
+  const t1   = t0 + gamma;
+  const clamp = x => Math.max(-500, Math.min(500, x));
+  const sigmoid = x => 1 / (1 + Math.exp(-clamp(x)));
+
+  // Shared sigmoid denominator (governs the onset sharpness)
+  const denom = 1 + Math.exp(-clamp((t - t0) / tau_rise));
+
+  // Rise component: grows from ~0 at t0 to A(1-beta) at t1
+  const betaExp = Math.pow(Math.max(beta, 1e-10), (t - t0) / gamma);
+  const rise = A * (1 - betaExp) / denom;
+
+  // Fall component: starts at A(1-beta) at t1, decays exponentially
+  const fall = A * (1 - beta) * Math.exp(-Math.max(0, t - t1) / tau_fall) / denom;
+
+  const s = sigmoid((t - t1) / 3);
+  return rise * (1 - s) + fall * s;
+}
+
+// Build Plotly line traces for the SPM overlay on the current light curve.
+// Returns [] if lcOverlay !== 'spm', no features, or no detections.
+function computeSPMTraces(useFlux) {
+  if (lcOverlay !== 'spm') return [];
+  if (selectedIdx == null || !currentDetections.length) return [];
+  const obj   = objectsData[selectedIdx];
+  if (!obj) return [];
+  const feats = featuresData[obj.oid];
+  if (!feats) return [];
+
+  // Global time reference: MJD of the first (earliest) detection across all bands
+  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
+  if (!allMjds.length) return [];
+  const firstMjd = Math.min(...allMjds);
+  const tMax     = Math.max(...allMjds) - firstMjd;
+
+  // 100-point time grid spanning all detections
+  const tGrid   = Array.from({length: 100}, (_, i) => tMax * i / 99);
+  const mjdGrid = tGrid.map(t => t + firstMjd);
+
+  const traces = [];
+  const overlayBands = ['g', 'r', 'i'];
+
+  for (const band of overlayBands) {
+    const A        = feats[`SPM_A_${band}`];
+    const beta     = feats[`SPM_beta_${band}`];
+    const t0       = feats[`SPM_t0_${band}`];
+    const gamma    = feats[`SPM_gamma_${band}`];
+    const tau_rise = feats[`SPM_tau_rise_${band}`];
+    const tau_fall = feats[`SPM_tau_fall_${band}`];
+
+    if ([A, beta, t0, gamma, tau_rise, tau_fall].some(v => v == null || !isFinite(v))) continue;
+    if (gamma <= 0 || tau_rise <= 0 || tau_fall <= 0) continue;
+
+    const x = [], y = [];
+    tGrid.forEach((t, i) => {
+      // SPM_A is in mJy (the feature extractor multiplies µJy by 0.001 before fitting,
+      // for backwards compatibility with the old mJy-based SPM).
+      // Display flux (psfFlux) is in µJy (ABZP = 23.9), so scale up by 1000.
+      const fVal_mJy = spmFlux(t, A, beta, t0, gamma, tau_rise, tau_fall);
+      const fVal = fVal_mJy * 1000;  // mJy → µJy
+      let yVal;
+      if (useFlux) {
+        yVal = fVal;
+      } else {
+        // Convert µJy → AB mag
+        yVal = (fVal > 0) ? (ABZP - 2.5 * Math.log10(fVal)) : null;
+      }
+      if (yVal != null && isFinite(yVal)) {
+        x.push(mjdGrid[i]);
+        y.push(yVal);
+      } else {
+        x.push(null);  // gap
+        y.push(null);
+      }
+    });
+
+    if (x.some(v => v != null)) {
+      traces.push({
+        x, y,
+        mode: 'lines',
+        name: `SPM ${band}`,
+        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dash', width: 1.5 },
+        type: 'scatter',
+        connectgaps: false,
+        showlegend: true,
+      });
+    }
+  }
+  return traces;
+}
+
+function toggleLCOverlay(val) {
+  lcOverlay = (val === 'none') ? null : val;
+  if (currentDetections.length) renderLightCurve();
+}
+
 // Returns the period (days) for the currently selected object, or null if unavailable.
 // ZTF: Multiband_period_fid12  (bands g+r combined)
 // LSST: not yet standardised — returns null
@@ -1409,6 +1649,52 @@ function getCurrentPeriod() {
 }
 
 function renderLightCurve() {
+  // Update selected-info with per-band detection counts now that detections are loaded
+  if (selectedIdx != null && currentDetections.length) {
+    const obj   = objectsData[selectedIdx];
+    const color = classColorMap[obj.class_name] || '#58a6ff';
+    const bandCounts = {};
+    currentDetections.forEach(d => {
+      if (d.band_name) bandCounts[d.band_name] = (bandCounts[d.band_name] || 0) + 1;
+    });
+    const countStr = Object.entries(bandCounts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([band, n]) => `<span style="color:${BAND_COLORS[band] ?? 'var(--text-secondary)'}">&#x25cf;</span>${n}`)
+      .join(' ');
+    document.getElementById('selected-info').innerHTML =
+      `<b style="color:${color}">${obj.oid}</b> &nbsp;·&nbsp; ` +
+      `<span style="color:${color}">${obj.class_name || '?'}</span> &nbsp;·&nbsp; ` +
+      `P = ${obj.probability != null ? obj.probability.toFixed(3) : '?'}` +
+      (countStr ? ` &nbsp;·&nbsp; ${countStr}` : '');
+  }
+
+  // Show/hide SPM parameter table
+  const spmInfoEl = document.getElementById('lc-spm-info');
+  if (lcOverlay === 'spm' && selectedIdx != null) {
+    const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
+    const spmParams = [
+      { key: 'SPM_A',        label: 'A',     fmt: v => v.toFixed(3) },
+      { key: 'SPM_beta',     label: 'β',     fmt: v => v.toFixed(3) },
+      { key: 'SPM_t0',       label: 't₀',    fmt: v => v.toFixed(2) },
+      { key: 'SPM_gamma',    label: 'γ',     fmt: v => v.toFixed(2) },
+      { key: 'SPM_tau_rise', label: 'τ↑',    fmt: v => v.toFixed(2) },
+      { key: 'SPM_tau_fall', label: 'τ↓',    fmt: v => v.toFixed(2) },
+      { key: 'SPM_chi',      label: 'χ²',    fmt: v => v.toFixed(3) },
+    ];
+    const rows = ['g', 'r'].map(band => {
+      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
+      const vals = spmParams.map(({ key, label, fmt }) => {
+        const v = feats[`${key}_${band}`];
+        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
+      }).join('  ');
+      return `<span style="color:${color}">${band}</span>  ${vals}`;
+    });
+    spmInfoEl.innerHTML = rows.join('<br>');
+    spmInfoEl.style.display = '';
+  } else {
+    spmInfoEl.style.display = 'none';
+  }
+
   const useFlux = lcFluxMode;
   const useFold = lcFoldMode;
   const period  = useFold ? getCurrentPeriod() : null;
@@ -1488,7 +1774,7 @@ function renderLightCurve() {
 
   const xLabel = useFold ? 'Phase' : 'MJD';
   const yLabel = useFlux
-    ? (useSci ? 'Science Flux (nJy)' : 'Diff Flux (nJy)')
+    ? (useSci ? 'Science Flux (µJy)' : 'Diff Flux (µJy)')
     : (useSci ? 'Science Mag (AB)'   : 'Diff Mag (AB)');
   const layout = {
     paper_bgcolor: '#161b22',
@@ -1504,6 +1790,12 @@ function renderLightCurve() {
     legend: { font:{size:9}, bgcolor:'rgba(0,0,0,0)', x:1, xanchor:'right', y:1 },
     showlegend: true,
   };
+
+  // Append parametric model overlay traces (e.g. SPM) — only in non-folded view
+  if (!useFold) {
+    const overlayTraces = computeSPMTraces(useFlux);
+    traces.push(...overlayTraces);
+  }
 
   Plotly.newPlot('lc-div', traces, layout, { displayModeBar:false, responsive:true });
 }
@@ -1639,10 +1931,16 @@ function resetUI() {
   lcFluxMode = false;
   lcFoldMode = false;
   useScienceFlux = false;
+  featureFilters = {};
+  plotObjIdx     = null;
+  lcOverlay = null;
+  const overlaySelReset = document.getElementById('lc-overlay-sel');
+  if (overlaySelReset) overlaySelReset.value = 'none';
   document.getElementById('lc-btn-mag').classList.add('active');
   document.getElementById('lc-btn-flux').classList.remove('active');
   document.getElementById('lc-btn-fold').classList.remove('active');
   document.getElementById('lc-period-info').style.display = 'none';
+  document.getElementById('lc-spm-info').style.display    = 'none';
   const sciBtn = document.getElementById('lc-btn-sci');
   sciBtn.textContent = 'Diff';
   sciBtn.classList.remove('active');
@@ -1696,11 +1994,16 @@ function captureState() {
   if (Object.keys(customColors).length) state.colors = customColors;
   // Selected object and LC display state
   if (selectedIdx != null && objectsData[selectedIdx]) {
-    state.oid    = objectsData[selectedIdx].oid;
-    state.lcFlux = lcFluxMode;
-    state.lcSci  = useScienceFlux;
-    state.lcFold = lcFoldMode;
+    state.oid       = objectsData[selectedIdx].oid;
+    state.lcFlux    = lcFluxMode;
+    state.lcSci     = useScienceFlux;
+    state.lcFold    = lcFoldMode;
+    if (lcOverlay) state.lcOverlay = lcOverlay;
   }
+  const activeFilters = Object.fromEntries(
+    Object.entries(featureFilters).filter(([, b]) => b.min != null || b.max != null)
+  );
+  if (Object.keys(activeFilters).length) state.filters = activeFilters;
   return state;
 }
 
@@ -1724,9 +2027,39 @@ function shareState() {
 // ── RESIZER ───────────────────────────────────────────────────────────────────
 
 function initResizer() {
+  const pairPlot   = document.getElementById('pair-plot');
+
+  // ── Sidebar ↔ pair-plot resizer ──
+  const sidebarResizer = document.getElementById('sidebar-resizer');
+  const sidebar        = document.querySelector('.sidebar');
+  sidebarResizer.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const startX     = e.clientX;
+    const startWidth = sidebar.getBoundingClientRect().width;
+    sidebarResizer.classList.add('dragging');
+    document.body.style.cursor     = 'col-resize';
+    document.body.style.userSelect = 'none';
+    function onMove(e) {
+      const w = Math.max(280, Math.min(700, startWidth + (e.clientX - startX)));
+      sidebar.style.width    = w + 'px';
+      sidebar.style.minWidth = w + 'px';
+      if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+    }
+    function onUp() {
+      sidebarResizer.classList.remove('dragging');
+      document.body.style.cursor     = '';
+      document.body.style.userSelect = '';
+      if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  // ── Pair-plot ↔ right-panel resizer ──
   const resizer   = document.getElementById('resizer');
   const rightPanel = document.getElementById('right-panel');
-  const pairPlot   = document.getElementById('pair-plot');
 
   resizer.addEventListener('mousedown', e => {
     e.preventDefault();
