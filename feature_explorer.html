@@ -439,6 +439,9 @@ select option { background: var(--bg-tertiary); }
         <button class="btn primary" style="flex:1;" onclick="runQuery()">
           <i class="fa-solid fa-magnifying-glass"></i> Query &amp; Load Features
         </button>
+        <button class="btn" id="btn-share" style="flex:0 0 auto;" onclick="shareState()" title="Copy shareable URL to clipboard">
+          <i class="fa-solid fa-link"></i>
+        </button>
         <button class="btn" style="flex:0 0 auto;" onclick="resetUI()" title="Clear results">
           <i class="fa-solid fa-xmark"></i>
         </button>
@@ -624,6 +627,7 @@ let lcFluxMode        = false;  // false = magnitude, true = flux (nJy)
 let lcFoldMode        = false;  // true = fold by period
 let useScienceFlux    = false;  // true = science (corrected) flux, false = difference flux
 let currentDetections = [];     // cached detections for the selected object (avoids re-fetch on toggle)
+let pendingRestore    = null;   // decoded URL state waiting to be applied after classifiers/features load
 let aladinInstance = null;
 let aladinCat      = null;
 let selectedIdx    = null;   // index into objectsData of highlighted point
@@ -681,11 +685,35 @@ async function fetchClassifiers() {
       sel.appendChild(o);
     });
 
-    if (SC().defaultClassifier && classifierClasses[SC().defaultClassifier]) {
-      sel.value = SC().defaultClassifier;
+    if (pendingRestore) {
+      // Restore mode: set classifier from URL state, then add classes and run query
+      const state = pendingRestore;
+      if (state.clf && [...sel.options].some(o => o.value === state.clf)) sel.value = state.clf;
+      onClassifierChange(); // populates #sel-class, resets selectedClasses to []
+      if (state.classes) {
+        state.classes.forEach(cls => {
+          if ([...document.querySelectorAll('#sel-class option')].some(o => o.value === cls)
+              && !selectedClasses.includes(cls)) selectedClasses.push(cls);
+        });
+        renderClassTags();
+      }
+      if (state.prob) document.getElementById('inp-prob').value = state.prob;
+      if (state.ndet) document.getElementById('inp-ndet').value = state.ndet;
+      if (state.sample) {
+        document.getElementById('chk-sample').checked = true;
+        document.getElementById('n-sample').disabled = false;
+        if (state.n) document.getElementById('n-sample').value = state.n;
+      }
+      setStatus(`${SC().name} classifiers loaded. Restoring query…`);
+      if (selectedClasses.length > 0) await runQuery();
+      else pendingRestore = null;
+    } else {
+      if (SC().defaultClassifier && classifierClasses[SC().defaultClassifier]) {
+        sel.value = SC().defaultClassifier;
+      }
+      onClassifierChange();
+      setStatus(`${SC().name} classifiers loaded.`);
     }
-    onClassifierChange();
-    setStatus(`${SC().name} classifiers loaded.`);
   } catch(e) {
     sel.innerHTML = '<option value="">(failed to load)</option>';
     setStatus(`Classifier load failed: ${e.message}`);
@@ -956,6 +984,47 @@ function buildFeatureListUI() {
     });
     container.appendChild(item);
   });
+
+  if (pendingRestore) {
+    const state = pendingRestore;
+    pendingRestore = null;
+
+    // Restore which features are checked
+    if (state.features && state.features.length > 0) {
+      const wanted = new Set(state.features);
+      document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+        const chk = item.querySelector('input');
+        const on = wanted.has(chk.value);
+        chk.checked = on;
+        item.classList.toggle('on', on);
+      });
+    }
+
+    // Restore transforms
+    if (state.xforms) {
+      Object.entries(state.xforms).forEach(([feat, xf]) => {
+        if (!xf) return;
+        featureTransforms[feat] = xf;
+        document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+          const chk = item.querySelector('input');
+          if (chk && chk.value === feat) {
+            item.querySelectorAll('.xform-btn').forEach(b => b.classList.toggle('active', b.textContent === xf));
+          }
+        });
+      });
+    }
+
+    // Restore custom colors (runQuery already assigned palette defaults)
+    if (state.colors) {
+      Object.entries(state.colors).forEach(([cls, hex]) => {
+        if (classColorMap[cls] !== undefined) classColorMap[cls] = hex;
+      });
+      renderClassTags();
+    }
+
+    // Auto-render pair plot
+    if (getSelectedFeatures().length >= 2 && objectsData.length > 0) buildPairPlot();
+  }
 }
 
 function getSelectedFeatures() {
@@ -1240,22 +1309,36 @@ async function loadObjectDetail(obj) {
     const data = await lcResp.json();
     let dets = data.detections || (Array.isArray(data) ? data : []);
 
-    // ZTF: v2 endpoint carries mag_corr/e_mag_corr; cross-match by candid
-    if (fpResp && fpResp.ok) {
-      try {
-        const fpData = await fpResp.json();
-        const v2Dets = fpData.detections || [];
-        if (v2Dets.length > 0) {
-          const v2Map = new Map(v2Dets.map(d => [String(d.candid), d]));
-          dets.forEach(d => {
-            const v2 = v2Map.get(String(d.candid));
-            if (v2 && v2.mag_corr != null) {
-              d.mag_corr   = v2.mag_corr;
-              d.e_mag_corr = v2.e_mag_corr;
-            }
-          });
-        }
-      } catch(_) { /* v2 failure is non-fatal */ }
+    // ZTF: v2 endpoint carries mag_corr/e_mag_corr; cross-match by candid.
+    // Also check if v1 already has mag_corr (some objects do).
+    const hasMagCorr = dets.some(d => d.mag_corr != null);
+    if (!hasMagCorr && fpResp) {
+      console.log('[sci-flux] v2 status:', fpResp.status, fpResp.url);
+      if (fpResp.ok) {
+        try {
+          const fpData = await fpResp.json();
+          console.log('[sci-flux] v2 response keys:', Object.keys(fpData), 'det count:', (fpData.detections||[]).length);
+          const v2Dets = fpData.detections || [];
+          if (v2Dets.length > 0) {
+            console.log('[sci-flux] sample v2 det:', JSON.stringify(v2Dets[0]).slice(0, 200));
+            const v2Map = new Map(v2Dets.map(d => [String(d.candid), d]));
+            let enriched = 0;
+            dets.forEach(d => {
+              const v2 = v2Map.get(String(d.candid));
+              if (v2 && v2.mag_corr != null) {
+                d.mag_corr   = v2.mag_corr;
+                d.e_mag_corr = v2.e_mag_corr;
+                enriched++;
+              }
+            });
+            console.log(`[sci-flux] enriched ${enriched}/${dets.length} detections with mag_corr`);
+          }
+        } catch(e) { console.warn('[sci-flux] v2 parse error:', e); }
+      } else {
+        console.warn('[sci-flux] v2 fetch failed:', fpResp.status);
+      }
+    } else if (hasMagCorr) {
+      console.log('[sci-flux] v1 already has mag_corr — no v2 fetch needed');
     }
 
     dets.forEach(d => normalizeDet(d));
@@ -1546,8 +1629,74 @@ function toggleHelp() {
   document.getElementById('btn-help').classList.toggle('active', open);
 }
 
+// ── URL SHARING ───────────────────────────────────────────────────────────────
+
+function captureState() {
+  // Find which colors differ from the auto-assigned palette defaults
+  const customColors = {};
+  selectedClasses.forEach((cls, i) => {
+    const def = CLASS_PALETTE[i % CLASS_PALETTE.length];
+    if (classColorMap[cls] && classColorMap[cls] !== def) customColors[cls] = classColorMap[cls];
+  });
+
+  const state = {
+    v: 1,
+    survey:   currentSurvey,
+    clf:      document.getElementById('sel-classifier').value,
+    classes:  [...selectedClasses],
+    features: getSelectedFeatures(),
+    xforms:   Object.fromEntries(Object.entries(featureTransforms).filter(([, v]) => v)),
+  };
+  const prob  = document.getElementById('inp-prob').value;
+  const ndet  = document.getElementById('inp-ndet').value;
+  const samp  = document.getElementById('chk-sample').checked;
+  if (prob)  state.prob   = prob;
+  if (ndet)  state.ndet   = ndet;
+  if (samp)  { state.sample = true; state.n = document.getElementById('n-sample').value; }
+  if (Object.keys(customColors).length) state.colors = customColors;
+  return state;
+}
+
+function shareState() {
+  const encoded = btoa(encodeURIComponent(JSON.stringify(captureState())));
+  location.hash = encoded;
+  const url = location.href;
+  const btn = document.getElementById('btn-share');
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+    setTimeout(() => { btn.innerHTML = orig; }, 1800);
+  }).catch(() => {
+    // hash is already set — user can copy from address bar
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+    setTimeout(() => { btn.innerHTML = orig; }, 1800);
+  });
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
-fetchClassifiers();
+
+function init() {
+  const hash = location.hash.slice(1);
+  if (hash) {
+    try {
+      const state = JSON.parse(decodeURIComponent(atob(hash)));
+      if (state && state.v === 1) {
+        pendingRestore = state;
+        // Apply survey without calling onSurveyChange (which would resetUI unnecessarily)
+        const survey = state.survey || 'ztf';
+        currentSurvey = survey;
+        document.getElementById('btn-lsst').className = 'survey-btn' + (survey === 'lsst' ? ' active' : '');
+        document.getElementById('btn-ztf').className  = 'survey-btn' + (survey === 'ztf'  ? ' active' : '');
+        fetchClassifiers();
+        return;
+      }
+    } catch (_) {}
+  }
+  fetchClassifiers();
+}
+
+init();
 </script>
 </body>
 </html>
