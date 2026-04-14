@@ -521,7 +521,7 @@ select option { background: var(--bg-tertiary); }
         <span style="margin-left:auto;display:flex;gap:3px;">
           <button class="ptb-btn active" id="lc-btn-mag"  onclick="toggleLCFluxMode(false)" title="Show magnitude"  style="width:auto;padding:0 6px;font-size:10px;height:22px;">Mag</button>
           <button class="ptb-btn"        id="lc-btn-flux" onclick="toggleLCFluxMode(true)"  title="Show flux in nJy" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Flux</button>
-          <button class="ptb-btn"        id="lc-btn-sci"  onclick="toggleLCSciMode()"       title="Switch between difference flux and science (corrected) flux — ZTF only" style="width:auto;padding:0 6px;font-size:10px;height:22px;display:none;">Diff</button>
+          <button class="ptb-btn"        id="lc-btn-sci"  onclick="toggleLCSciMode()"       title="Switch between difference image and science (corrected) image — ZTF only" style="width:auto;padding:0 6px;font-size:10px;height:22px;display:none;">Diff</button>
           <button class="ptb-btn"        id="lc-btn-fold" onclick="toggleLCFoldMode()"      title="Fold by period"  style="width:auto;padding:0 6px;font-size:10px;height:22px;margin-left:4px;"><i class="fa-solid fa-rotate"></i> Fold</button>
         </span>
       </div>
@@ -1356,6 +1356,7 @@ async function loadObjectDetail(obj) {
     dets = dets.filter(d => d.mjd != null && isFinite(d.mjd));
     currentDetections = dets;
     renderLightCurve();
+    document.getElementById('lc-btn-sci').style.display = ''; // show once LC is loaded
     if (obj.meanra != null && obj.meandec != null) {
       updateAladin(obj.meanra, obj.meandec, obj.oid);
     }
@@ -1405,14 +1406,16 @@ function renderLightCurve() {
     return;
   }
 
-  // In flux mode, useScienceFlux selects between science and difference flux
-  const useSci = useFlux && useScienceFlux;
+  // useScienceFlux applies to both flux and magnitude modes
+  const useSci = useScienceFlux;
 
   const dets = currentDetections.filter(d => {
     if (!isFinite(d.mjd)) return false;
     if (useFlux) return useSci ? (d.scienceFlux != null && isFinite(d.scienceFlux))
                                : (d.psfFlux     != null && isFinite(d.psfFlux));
-    return d.mag != null && isFinite(d.mag);
+    // Magnitude mode
+    return useSci ? (d.mag_corr != null && isFinite(d.mag_corr))
+                  : (d.mag      != null && isFinite(d.mag));
   });
 
   // Fold: compute phase relative to first detection, show two cycles
@@ -1425,10 +1428,10 @@ function renderLightCurve() {
   const bands = {};
   dets.forEach(d => {
     if (!bands[d.band_name]) bands[d.band_name] = { x:[], y:[], err:[] };
-    const yVal = useFlux ? (useSci ? d.scienceFlux    : d.psfFlux)
-                         : d.mag;
+    const yVal = useFlux ? (useSci ? d.scienceFlux  : d.psfFlux)
+                         : (useSci ? d.mag_corr    : d.mag);
     const eVal = useFlux ? (useSci ? (d.scienceFluxErr ?? 0) : (d.psfFluxErr ?? 0))
-                         : (d.e_mag ?? 0);
+                         : (useSci ? (d.e_mag_corr ?? 0)     : (d.e_mag      ?? 0));
     if (useFold) {
       const phase = (((d.mjd - t0) % period) + period) % period / period;
       // Two cycles: add point at phase and phase+1
@@ -1452,7 +1455,9 @@ function renderLightCurve() {
   }));
 
   const xLabel = useFold ? 'Phase' : 'MJD';
-  const yLabel = useFlux ? (useSci ? 'Science Flux (nJy)' : 'Diff Flux (nJy)') : 'Mag (AB)';
+  const yLabel = useFlux
+    ? (useSci ? 'Science Flux (nJy)' : 'Diff Flux (nJy)')
+    : (useSci ? 'Science Mag (AB)'   : 'Diff Mag (AB)');
   const layout = {
     paper_bgcolor: '#161b22',
     plot_bgcolor:  '#161b22',
@@ -1463,7 +1468,7 @@ function renderLightCurve() {
               color:'#8b949e', gridcolor:'#21262d', zeroline:false, tickfont:{size:8} },
     yaxis:  { title:{text:yLabel, font:{size:9}, standoff:4},
               autorange: useFlux ? true : 'reversed',
-              color:'#8b949e', gridcolor:'#21262d', zeroline:useFlux, tickfont:{size:8} },
+              color:'#8b949e', gridcolor:'#21262d', zeroline: useFlux, tickfont:{size:8} },
     legend: { font:{size:9}, bgcolor:'rgba(0,0,0,0)', x:1, xanchor:'right', y:1 },
     showlegend: true,
   };
@@ -1475,15 +1480,6 @@ function toggleLCFluxMode(useFlux) {
   lcFluxMode = useFlux;
   document.getElementById('lc-btn-mag').classList.toggle('active',  !useFlux);
   document.getElementById('lc-btn-flux').classList.toggle('active',  useFlux);
-  // Sci button only makes sense in flux mode; hide in mag mode
-  const sciBtn = document.getElementById('lc-btn-sci');
-  sciBtn.style.display = useFlux ? '' : 'none';
-  if (!useFlux) {
-    // Reset science flux state when switching to magnitude
-    useScienceFlux = false;
-    sciBtn.textContent = 'Diff';
-    sciBtn.classList.remove('active');
-  }
   if (currentDetections.length) renderLightCurve();
 }
 
