@@ -508,10 +508,12 @@ select option { background: var(--bg-tertiary); }
       <div class="panel-title">
         <i class="fa-solid fa-wave-square"></i> Light Curve
         <span style="margin-left:auto;display:flex;gap:3px;">
-          <button class="ptb-btn active" id="lc-btn-mag"  onclick="toggleLCFluxMode(false)" title="Show magnitude" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Mag</button>
+          <button class="ptb-btn active" id="lc-btn-mag"  onclick="toggleLCFluxMode(false)" title="Show magnitude"  style="width:auto;padding:0 6px;font-size:10px;height:22px;">Mag</button>
           <button class="ptb-btn"        id="lc-btn-flux" onclick="toggleLCFluxMode(true)"  title="Show flux in nJy" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Flux</button>
+          <button class="ptb-btn"        id="lc-btn-fold" onclick="toggleLCFoldMode()"      title="Fold by period"  style="width:auto;padding:0 6px;font-size:10px;height:22px;margin-left:4px;"><i class="fa-solid fa-rotate"></i> Fold</button>
         </span>
       </div>
+      <div id="lc-period-info" style="display:none;font-size:10px;color:var(--text-secondary);padding:1px 12px 3px;flex-shrink:0;"></div>
       <div id="selected-info">Click a point in the pair plot to load details.</div>
       <div id="lc-div"></div>
     </div>
@@ -612,6 +614,7 @@ let featureTransforms = {};  // featureName → 'log' | 'asinh' | null
 
 let scatterTraceIdxs  = []; // trace indices of scatter subplots (for multi-trace selectedpoints)
 let lcFluxMode        = false;  // false = magnitude, true = flux (nJy)
+let lcFoldMode        = false;  // true = fold by period
 let currentDetections = [];     // cached detections for the selected object (avoids re-fetch on toggle)
 let aladinInstance = null;
 let aladinCat      = null;
@@ -1229,23 +1232,77 @@ async function loadObjectDetail(obj) {
   }
 }
 
+// Returns the period (days) for the currently selected object, or null if unavailable.
+// ZTF: Multiband_period_fid12  (bands g+r combined)
+// LSST: not yet standardised — returns null
+function getCurrentPeriod() {
+  if (selectedIdx == null) return null;
+  const feats = featuresData[objectsData[selectedIdx]?.oid];
+  if (!feats) return null;
+  return feats['Multiband_period_fid12'] ?? null;
+}
+
 function renderLightCurve() {
   const useFlux = lcFluxMode;
+  const useFold = lcFoldMode;
+  const period  = useFold ? getCurrentPeriod() : null;
+
+  // Period info bar
+  const infoEl = document.getElementById('lc-period-info');
+  if (useFold) {
+    infoEl.style.display = '';
+    if (period == null) {
+      infoEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation" style="color:var(--warning);margin-right:4px;"></i>No period feature (Multiband_period_fid12) available for this object.';
+    } else {
+      infoEl.innerHTML = `<i class="fa-solid fa-rotate" style="color:var(--accent);margin-right:4px;"></i>P = <b style="color:var(--accent)">${period.toFixed(6)}</b> days &nbsp;·&nbsp; two cycles shown`;
+    }
+  } else {
+    infoEl.style.display = 'none';
+  }
+
+  // If folding but no period, draw an empty placeholder
+  if (useFold && period == null) {
+    Plotly.newPlot('lc-div', [], {
+      paper_bgcolor:'#161b22', plot_bgcolor:'#161b22',
+      margin:{ l:52, r:8, t:8, b:36 },
+      xaxis:{ color:'#8b949e', gridcolor:'#21262d' },
+      yaxis:{ color:'#8b949e', gridcolor:'#21262d' },
+    }, { displayModeBar:false, responsive:true });
+    return;
+  }
+
   const dets = currentDetections.filter(d =>
     useFlux ? (d.psfFlux != null && isFinite(d.psfFlux))
             : (d.mag     != null && isFinite(d.mag))
   );
 
+  // Fold: compute phase relative to first detection, show two cycles
+  let t0 = 0;
+  if (useFold) {
+    const mjds = dets.map(d => d.mjd).filter(v => v != null && isFinite(v));
+    t0 = mjds.length ? Math.min(...mjds) : 0;
+  }
+
   const bands = {};
   dets.forEach(d => {
-    if (!bands[d.band_name]) bands[d.band_name] = { mjd:[], y:[], err:[] };
-    bands[d.band_name].mjd.push(d.mjd);
-    bands[d.band_name].y.push(useFlux ? d.psfFlux : d.mag);
-    bands[d.band_name].err.push(useFlux ? (d.psfFluxErr ?? 0) : (d.e_mag ?? 0));
+    if (!bands[d.band_name]) bands[d.band_name] = { x:[], y:[], err:[] };
+    const yVal = useFlux ? d.psfFlux : d.mag;
+    const eVal = useFlux ? (d.psfFluxErr ?? 0) : (d.e_mag ?? 0);
+    if (useFold) {
+      const phase = (((d.mjd - t0) % period) + period) % period / period;
+      // Two cycles: add point at phase and phase+1
+      bands[d.band_name].x.push(phase, phase + 1);
+      bands[d.band_name].y.push(yVal, yVal);
+      bands[d.band_name].err.push(eVal, eVal);
+    } else {
+      bands[d.band_name].x.push(d.mjd);
+      bands[d.band_name].y.push(yVal);
+      bands[d.band_name].err.push(eVal);
+    }
   });
 
   const traces = Object.entries(bands).sort().map(([band, v]) => ({
-    x: v.mjd, y: v.y,
+    x: v.x, y: v.y,
     error_y: { type:'data', array:v.err, visible:true, thickness:1, width:2, color: BAND_COLORS[band] ?? '#aaa' },
     mode: 'markers',
     name: band,
@@ -1253,15 +1310,19 @@ function renderLightCurve() {
     type: 'scatter',
   }));
 
+  const xLabel = useFold ? 'Phase' : 'MJD';
   const yLabel = useFlux ? 'Flux (nJy)' : 'Mag (AB)';
   const layout = {
     paper_bgcolor: '#161b22',
     plot_bgcolor:  '#161b22',
     font:   { color:'#8b949e', size:9 },
     margin: { l:52, r:8, t:8, b:36 },
-    xaxis:  { title:{text:'MJD', font:{size:9}, standoff:4}, color:'#8b949e', gridcolor:'#21262d', zeroline:false, tickfont:{size:8} },
-    yaxis:  { title:{text:yLabel, font:{size:9}, standoff:4}, autorange: useFlux ? true : 'reversed',
-              color:'#8b949e', gridcolor:'#21262d', zeroline: useFlux, tickfont:{size:8} },
+    xaxis:  { title:{text:xLabel, font:{size:9}, standoff:4},
+              range: useFold ? [0, 2] : undefined,
+              color:'#8b949e', gridcolor:'#21262d', zeroline:false, tickfont:{size:8} },
+    yaxis:  { title:{text:yLabel, font:{size:9}, standoff:4},
+              autorange: useFlux ? true : 'reversed',
+              color:'#8b949e', gridcolor:'#21262d', zeroline:useFlux, tickfont:{size:8} },
     legend: { font:{size:9}, bgcolor:'rgba(0,0,0,0)', x:1, xanchor:'right', y:1 },
     showlegend: true,
   };
@@ -1273,6 +1334,12 @@ function toggleLCFluxMode(useFlux) {
   lcFluxMode = useFlux;
   document.getElementById('lc-btn-mag').classList.toggle('active',  !useFlux);
   document.getElementById('lc-btn-flux').classList.toggle('active',  useFlux);
+  if (currentDetections.length) renderLightCurve();
+}
+
+function toggleLCFoldMode() {
+  lcFoldMode = !lcFoldMode;
+  document.getElementById('lc-btn-fold').classList.toggle('active', lcFoldMode);
   if (currentDetections.length) renderLightCurve();
 }
 
