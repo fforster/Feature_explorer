@@ -460,6 +460,9 @@ select option { background: var(--bg-tertiary); }
         <button class="btn sm" onclick="selectAll(false)">None</button>
         <button class="btn sm" onclick="selectDefaults()">Default</button>
       </div>
+      <input id="feat-search" type="search" placeholder="Search features…"
+             style="width:100%;box-sizing:border-box;margin-bottom:6px;padding:4px 7px;font-size:11px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);outline:none;"
+             oninput="filterFeatureList(this.value)"/>
       <div class="feature-list" id="feature-list"></div>
       <button class="btn primary" style="width:100%;" onclick="buildPairPlot()">
         <i class="fa-solid fa-chart-scatter"></i> Update Pair Plot
@@ -1027,6 +1030,14 @@ function buildFeatureListUI() {
   }
 }
 
+function filterFeatureList(query) {
+  const q = query.trim().toLowerCase();
+  document.querySelectorAll('#feature-list .feature-item').forEach(item => {
+    const name = item.querySelector('input')?.value ?? '';
+    item.style.display = (!q || name.toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+
 function getSelectedFeatures() {
   return [...document.querySelectorAll('#feature-list input:checked')].map(i => i.value);
 }
@@ -1586,6 +1597,7 @@ function resetUI() {
   document.getElementById('feat-section').style.display    = 'none';
   document.getElementById('legend-section').style.display  = 'none';
   document.getElementById('feature-list').innerHTML        = '';
+  document.getElementById('feat-search').value             = '';
   document.getElementById('pair-plot-placeholder').style.display = '';
   document.getElementById('pair-plot').style.display       = 'none';
   document.getElementById('pair-plot').innerHTML           = '';
