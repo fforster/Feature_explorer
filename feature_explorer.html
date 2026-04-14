@@ -563,6 +563,8 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
           <select id="lc-overlay-sel" onchange="toggleLCOverlay(this.value)" title="Parametric model overlay" style="margin-left:6px;height:22px;font-size:10px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:0 4px;cursor:pointer;">
             <option value="none">— overlay —</option>
             <option value="spm">SPM</option>
+            <option value="fleet">FLEET</option>
+            <option value="tde_tail">TDE tail</option>
           </select>
         </span>
       </div>
@@ -1633,6 +1635,139 @@ function computeSPMTraces(useFlux) {
   return traces;
 }
 
+// FLEET model: mag(t_norm) = exp(w*(t_norm-t0)) - a*w*(t_norm-t0) + m0
+// t_norm = mjd - first_mjd_in_band (per-band normalization)
+// Output is directly in magnitudes.
+function fleetMag(t_norm, a, w, m0, t0) {
+  const dt = t_norm - t0;
+  return Math.exp(w * dt) - a * w * dt + m0;
+}
+
+// Build Plotly line traces for the FLEET overlay.
+// Returns [] if lcOverlay !== 'fleet', no features, or no detections.
+function computeFleetTraces(useFlux) {
+  if (lcOverlay !== 'fleet') return [];
+  if (selectedIdx == null || !currentDetections.length) return [];
+  const obj = objectsData[selectedIdx];
+  if (!obj) return [];
+  const feats = featuresData[obj.oid];
+  if (!feats) return [];
+
+  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
+  if (!allMjds.length) return [];
+  const globalMin = Math.min(...allMjds);
+  const globalMax = Math.max(...allMjds);
+
+  const traces = [];
+  for (const band of ['g', 'r', 'i']) {
+    const a  = feats[`fleet_a_${band}`];
+    const w  = feats[`fleet_w_${band}`];
+    const m0 = feats[`fleet_m0_${band}`];
+    const t0 = feats[`fleet_t0_${band}`];
+    if ([a, w, m0, t0].some(v => v == null || !isFinite(v))) continue;
+
+    // Per-band time reference: first MJD with a detection in this band
+    const bandMjds = currentDetections
+      .filter(d => d.band_name === band && isFinite(d.mjd))
+      .map(d => d.mjd);
+    const firstMjdBand = bandMjds.length ? Math.min(...bandMjds) : globalMin;
+
+    // 100-point grid across all detections (global MJD range)
+    const x = [], y = [];
+    for (let i = 0; i < 100; i++) {
+      const mjd    = globalMin + (globalMax - globalMin) * i / 99;
+      const t_norm = mjd - firstMjdBand;
+      const mag    = fleetMag(t_norm, a, w, m0, t0);
+      if (!isFinite(mag)) { x.push(null); y.push(null); continue; }
+      let yVal;
+      if (useFlux) {
+        yVal = Math.pow(10, (ABZP - mag) / 2.5);  // mag → µJy
+      } else {
+        yVal = mag;
+      }
+      x.push(mjd);
+      y.push(isFinite(yVal) ? yVal : null);
+    }
+
+    if (x.some(v => v != null)) {
+      traces.push({
+        x, y,
+        mode: 'lines',
+        name: `FLEET ${band}`,
+        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dot', width: 1.5 },
+        type: 'scatter',
+        connectgaps: false,
+        showlegend: true,
+      });
+    }
+  }
+  return traces;
+}
+
+// TDE tail model: mag(t) = TDE_mag0 + TDE_decay * 2.5 * log10(t - t_peak + 40)
+// t_peak = MJD of brightest (min mag) detection in the band (derived from data, not stored).
+// Valid only for t > t_peak. Output is in difference-image magnitudes.
+function computeTDETailTraces(useFlux) {
+  if (lcOverlay !== 'tde_tail') return [];
+  if (selectedIdx == null || !currentDetections.length) return [];
+  const obj = objectsData[selectedIdx];
+  if (!obj) return [];
+  const feats = featuresData[obj.oid];
+  if (!feats) return [];
+
+  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
+  if (!allMjds.length) return [];
+  const globalMin = Math.min(...allMjds);
+  const globalMax = Math.max(...allMjds);
+
+  const traces = [];
+  for (const band of ['g', 'r', 'i']) {
+    const decay = feats[`TDE_decay_${band}`];
+    const mag0  = feats[`TDE_mag0_${band}`];
+    if ([decay, mag0].some(v => v == null || !isFinite(v))) continue;
+
+    // Find t_peak: MJD of the brightest (min mag) detection in this band,
+    // matching the extractor's filter: e_mag < 1.0 and mag < 30.
+    const bandDets = currentDetections.filter(d =>
+      d.band_name === band && isFinite(d.mag) && d.mag < 30 &&
+      isFinite(d.e_mag) && d.e_mag < 1.0
+    );
+    if (!bandDets.length) continue;
+    const tPeak = bandDets.reduce((best, d) => d.mag < best.mag ? d : best).mjd;
+
+    // 100-point grid from t_peak to global end
+    const x = [], y = [];
+    for (let i = 0; i < 100; i++) {
+      const mjd = tPeak + (globalMax - tPeak) * i / 99;
+      const dt  = mjd - tPeak;
+      if (dt <= 0) { x.push(null); y.push(null); continue; }
+      const mag = mag0 + decay * 2.5 * Math.log10(dt + 40);
+      if (!isFinite(mag)) { x.push(null); y.push(null); continue; }
+      let yVal;
+      if (useFlux) {
+        yVal = Math.pow(10, (ABZP - mag) / 2.5);  // mag → µJy
+      } else {
+        yVal = mag;
+      }
+      x.push(mjd);
+      y.push(isFinite(yVal) ? yVal : null);
+    }
+
+    if (x.some(v => v != null)) {
+      traces.push({
+        x, y,
+        mode: 'lines',
+        name: `TDE tail ${band}`,
+        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dashdot', width: 1.5 },
+        type: 'scatter',
+        connectgaps: false,
+        showlegend: true,
+      });
+    }
+  }
+  return traces;
+}
+
 function toggleLCOverlay(val) {
   lcOverlay = (val === 'none') ? null : val;
   if (currentDetections.length) renderLightCurve();
@@ -1668,8 +1803,8 @@ function renderLightCurve() {
       (countStr ? ` &nbsp;·&nbsp; ${countStr}` : '');
   }
 
-  // Show/hide SPM parameter table
-  const spmInfoEl = document.getElementById('lc-spm-info');
+  // Show/hide parametric model parameter table
+  const overlayInfoEl = document.getElementById('lc-spm-info');
   if (lcOverlay === 'spm' && selectedIdx != null) {
     const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
     const spmParams = [
@@ -1689,10 +1824,46 @@ function renderLightCurve() {
       }).join('  ');
       return `<span style="color:${color}">${band}</span>  ${vals}`;
     });
-    spmInfoEl.innerHTML = rows.join('<br>');
-    spmInfoEl.style.display = '';
+    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.style.display = '';
+  } else if (lcOverlay === 'fleet' && selectedIdx != null) {
+    const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
+    const fleetParams = [
+      { key: 'fleet_a',   label: 'a',   fmt: v => v.toFixed(3) },
+      { key: 'fleet_w',   label: 'w',   fmt: v => v.toFixed(4) },
+      { key: 'fleet_m0',  label: 'm₀',  fmt: v => v.toFixed(2) },
+      { key: 'fleet_t0',  label: 't₀',  fmt: v => v.toFixed(2) },
+      { key: 'fleet_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
+    ];
+    const rows = ['g', 'r'].map(band => {
+      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
+      const vals = fleetParams.map(({ key, label, fmt }) => {
+        const v = feats[`${key}_${band}`];
+        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
+      }).join('  ');
+      return `<span style="color:${color}">${band}</span>  ${vals}`;
+    });
+    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.style.display = '';
+  } else if (lcOverlay === 'tde_tail' && selectedIdx != null) {
+    const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
+    const tdeParams = [
+      { key: 'TDE_mag0',      label: 'm₀',  fmt: v => v.toFixed(2) },
+      { key: 'TDE_decay',     label: 'k',   fmt: v => v.toFixed(3) },
+      { key: 'TDE_decay_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
+    ];
+    const rows = ['g', 'r'].map(band => {
+      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
+      const vals = tdeParams.map(({ key, label, fmt }) => {
+        const v = feats[`${key}_${band}`];
+        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
+      }).join('  ');
+      return `<span style="color:${color}">${band}</span>  ${vals}`;
+    });
+    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.style.display = '';
   } else {
-    spmInfoEl.style.display = 'none';
+    overlayInfoEl.style.display = 'none';
   }
 
   const useFlux = lcFluxMode;
@@ -1785,15 +1956,24 @@ function renderLightCurve() {
               range: useFold ? [0, 2] : undefined,
               color:'#8b949e', gridcolor:'#21262d', zeroline:false, tickfont:{size:8} },
     yaxis:  { title:{text:yLabel, font:{size:9}, standoff:4},
-              autorange: useFlux ? true : 'reversed',
+              ...(() => {
+                if (useFlux) return { autorange: true };
+                const allMagVals = traces.flatMap(t => (t.y || []).filter(v => v != null && isFinite(v)));
+                if (!allMagVals.some(v => v > 27)) return { autorange: 'reversed' };
+                const yMin = Math.min(...allMagVals.filter(v => v <= 27)) - 0.3;
+                return { autorange: false, range: [27, yMin] };
+              })(),
               color:'#8b949e', gridcolor:'#21262d', zeroline: useFlux, tickfont:{size:8} },
     legend: { font:{size:9}, bgcolor:'rgba(0,0,0,0)', x:1, xanchor:'right', y:1 },
     showlegend: true,
   };
 
-  // Append parametric model overlay traces (e.g. SPM) — only in non-folded view
+  // Append parametric model overlay traces — only in non-folded view
   if (!useFold) {
-    const overlayTraces = computeSPMTraces(useFlux);
+    const overlayTraces =
+      lcOverlay === 'fleet'    ? computeFleetTraces(useFlux)   :
+      lcOverlay === 'tde_tail' ? computeTDETailTraces(useFlux) :
+                                 computeSPMTraces(useFlux);
     traces.push(...overlayTraces);
   }
 
