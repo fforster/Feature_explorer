@@ -568,6 +568,7 @@ const SURVEY_CONFIG = {
     objectsUrl:     p  => `https://api.alerce.online/ztf/v1/objects?${p}`,
     featuresUrl:    oid=> `https://api.alerce.online/ztf/v1/objects/${oid}/features`,
     lcUrl:          oid=> `https://api.alerce.online/ztf/v1/objects/${oid}/lightcurve`,
+    fpUrl:          oid=> `https://api.alerce.online/v2/lightcurve/lightcurve/${oid}?survey_id=ztf`,
     defaultClassifier: 'lc_classifier_BHRF_forced_phot',
     priorities: { stamp_classifier:0, lc_classifier_20_06_11:1, lc_classifier_top:2, lc_classifier:3 },
     extraParams(p) {
@@ -1231,10 +1232,32 @@ function normalizeDet(d) {
 async function loadObjectDetail(obj) {
   setStatus(`Loading light curve for ${obj.oid}…`);
   try {
-    const r = await fetch(SC().lcUrl(obj.oid));
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const cfg = SC();
+    const fetches = [fetch(cfg.lcUrl(obj.oid))];
+    if (cfg.fpUrl) fetches.push(fetch(cfg.fpUrl(obj.oid)));
+    const [lcResp, fpResp] = await Promise.all(fetches);
+    if (!lcResp.ok) throw new Error(`HTTP ${lcResp.status}`);
+    const data = await lcResp.json();
     let dets = data.detections || (Array.isArray(data) ? data : []);
+
+    // ZTF: v2 endpoint carries mag_corr/e_mag_corr; cross-match by candid
+    if (fpResp && fpResp.ok) {
+      try {
+        const fpData = await fpResp.json();
+        const v2Dets = fpData.detections || [];
+        if (v2Dets.length > 0) {
+          const v2Map = new Map(v2Dets.map(d => [String(d.candid), d]));
+          dets.forEach(d => {
+            const v2 = v2Map.get(String(d.candid));
+            if (v2 && v2.mag_corr != null) {
+              d.mag_corr   = v2.mag_corr;
+              d.e_mag_corr = v2.e_mag_corr;
+            }
+          });
+        }
+      } catch(_) { /* v2 failure is non-fatal */ }
+    }
+
     dets.forEach(d => normalizeDet(d));
     dets = dets.filter(d => d.mjd != null && isFinite(d.mjd));
     currentDetections = dets;
