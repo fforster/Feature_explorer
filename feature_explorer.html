@@ -1027,6 +1027,24 @@ function buildFeatureListUI() {
 
     // Auto-render pair plot
     if (getSelectedFeatures().length >= 2 && objectsData.length > 0) buildPairPlot();
+
+    // Restore selected object and LC display state
+    if (state.oid) {
+      const idx = objectsData.findIndex(o => o.oid === state.oid);
+      if (idx >= 0) {
+        // Set LC display state before loading so renderLightCurve picks it up immediately
+        lcFluxMode     = !!state.lcFlux;
+        useScienceFlux = !!state.lcSci;
+        lcFoldMode     = !!state.lcFold;
+        document.getElementById('lc-btn-mag').classList.toggle('active',  !lcFluxMode);
+        document.getElementById('lc-btn-flux').classList.toggle('active',  lcFluxMode);
+        document.getElementById('lc-btn-fold').classList.toggle('active',  lcFoldMode);
+        const sciBtn = document.getElementById('lc-btn-sci');
+        sciBtn.textContent = useScienceFlux ? 'Sci' : 'Diff';
+        sciBtn.classList.toggle('active', useScienceFlux);
+        onPointSelected(idx);
+      }
+    }
   }
 }
 
@@ -1663,6 +1681,13 @@ function captureState() {
   if (ndet)  state.ndet   = ndet;
   if (samp)  { state.sample = true; state.n = document.getElementById('n-sample').value; }
   if (Object.keys(customColors).length) state.colors = customColors;
+  // Selected object and LC display state
+  if (selectedIdx != null && objectsData[selectedIdx]) {
+    state.oid    = objectsData[selectedIdx].oid;
+    state.lcFlux = lcFluxMode;
+    state.lcSci  = useScienceFlux;
+    state.lcFold = lcFoldMode;
+  }
   return state;
 }
 
