@@ -395,8 +395,8 @@ select option { background: var(--bg-tertiary); }
       <div class="form-row">
         <div class="form-label">Survey</div>
         <div class="survey-btns">
-          <button class="survey-btn active" id="btn-lsst" onclick="onSurveyChange('lsst')">LSST</button>
-          <button class="survey-btn"        id="btn-ztf"  onclick="onSurveyChange('ztf')">ZTF</button>
+          <button class="survey-btn"        id="btn-lsst" onclick="onSurveyChange('lsst')">LSST</button>
+          <button class="survey-btn active" id="btn-ztf"  onclick="onSurveyChange('ztf')">ZTF</button>
         </div>
       </div>
 
@@ -435,9 +435,14 @@ select option { background: var(--bg-tertiary); }
         </div>
       </div>
 
-      <button class="btn primary" style="width:100%;margin-top:2px;" onclick="runQuery()">
-        <i class="fa-solid fa-magnifying-glass"></i> Query &amp; Load Features
-      </button>
+      <div style="display:flex;gap:6px;margin-top:2px;">
+        <button class="btn primary" style="flex:1;" onclick="runQuery()">
+          <i class="fa-solid fa-magnifying-glass"></i> Query &amp; Load Features
+        </button>
+        <button class="btn" style="flex:0 0 auto;" onclick="resetUI()" title="Clear results">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
       <div id="query-result" style="display:none;margin-top:8px;font-size:11px;color:var(--text-secondary);text-align:center;"></div>
     </div>
 
@@ -603,7 +608,7 @@ const DEFAULT_FEATURES = [
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 
-let currentSurvey  = 'lsst';
+let currentSurvey  = 'ztf';
 let objectsData    = [];     // [{oid, class_name, meanra, meandec, probability, …}]
 let featuresData   = {};     // oid → {featureName: value}
 let selectedClasses= [];     // ['SNIa', 'AGN', …]
