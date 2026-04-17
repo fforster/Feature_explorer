@@ -13,14 +13,16 @@ Everything lives in one self-contained HTML file with no build step. Load it dir
 ### Layout (three-column, resizable)
 
 ```
-[ Left sidebar (resizable, default 440px) ] [sidebar-resizer] [ Main – pair plot, flex:1 ] [resizer] [ Right panel ~380px ]
-                                                                                                      [ LC chart (top 50%)  ]
-                                                                                                      [ Aladin sky (bot 50%)]
+[ Left sidebar (resizable, default 440px) ] [sidebar-resizer] [ Main – pair plot or UMAP, flex:1 ] [resizer] [ Right panel ~380px ]
+                                                                                                             [ LC chart (top 50%)  ]
+                                                                                                             [ Aladin sky (bot 50%)]
 ```
 
 Two draggable dividers:
-- `#sidebar-resizer` (5px strip) — between the sidebar and the pair plot. Dragging sets `sidebar.style.width` and calls `Plotly.Plots.resize` on the pair plot.
-- `#resizer` (5px strip) — between the pair plot and the right panel. Dragging calls `Plotly.Plots.resize` on the pair plot during and after the drag.
+- `#sidebar-resizer` (5px strip) — between the sidebar and the main view. Dragging sets `sidebar.style.width` and resizes the active plot.
+- `#resizer` (5px strip) — between the main view and the right panel. Dragging resizes the active plot during and after the drag.
+
+The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#btn-view-umap`. Only one of `#pair-plot` or `#umap-plot` is visible at a time (see `switchView()`); each has its own placeholder (`#pair-plot-placeholder` / `#umap-placeholder`) shown when the plot has not yet been built.
 
 ### Key components and their IDs
 
@@ -32,16 +34,26 @@ Two draggable dividers:
 | Feature search box | `#feat-search` | — |
 | Feature list | `#feature-list` | — |
 | Show Selected button | `#btn-show-selected` | — |
-| Pair plot | `#pair-plot` | Plotly.js manual grid |
-| Light curve | `#lc-div` | Plotly.js scatter |
+| Sample CSV download | `#btn-download-sample` | — |
+| Data table button | `#btn-data-table` | — |
+| UMAP params | `#umap-n-neighbors` / `#umap-min-dist` / `#umap-impute` / `#umap-impute-val` | — |
+| View tabs | `#btn-view-pairplot` / `#btn-view-umap` | — |
+| Pair plot | `#pair-plot` (+ `#pair-plot-placeholder`) | Plotly.js manual grid |
+| UMAP plot | `#umap-plot` (+ `#umap-placeholder`) | Plotly.js scatter + umap-js |
+| Plot toolbar | `.plot-toolbar` (`#btn-box` / `#btn-lasso` / `#btn-help`) | — |
+| Help panel | `#help-panel` | — |
+| Light curve | `#lc-div` (+ `#lc-spinner` overlay, `#lc-wrap`) | Plotly.js scatter |
+| LC display toggles | `#lc-btn-mag` / `#lc-btn-flux` / `#lc-btn-sci` / `#lc-btn-fold` | — |
 | LC overlay selector | `#lc-overlay-sel` | — |
 | LC overlay info bar | `#lc-spm-info` | — |
+| LC CSV download | `#btn-download-lc` | — |
 | Sky view | `#aladin-lite-div` | Aladin Lite v3 |
+| Data table modal | `#dt-modal` / `#dt-body` / `#dt-info` | — |
 | Share button | `#btn-share` | — |
 | Live indicator | `#live-indicator` / `#live-label` | — |
 | Build timestamp | `#build-ts` | — |
 | Sidebar resizer | `#sidebar-resizer` | — |
-| Pair-plot/right resizer | `#resizer` | — |
+| Main/right resizer | `#resizer` | — |
 
 ### ALeRCE API endpoints (per survey)
 
@@ -73,9 +85,9 @@ Two draggable dividers:
 4. `runQuery()` → fetches object list for each selected class, merges, optionally shuffles and samples N; calls `fetchAllFeatures()`
 5. `fetchAllFeatures(oids)` → fetches features in parallel batches of 10; `pivotFeatures()` flattens `[{name, value, fid}]` into `{name_band: value}` dicts; stored in `featuresData[oid]`
 6. `buildFeatureListUI()` → renders feature rows from `allFeatureNames`; if `pendingRestore`, applies feature show state, transforms, colors, then calls `buildPairPlot()` and optionally `onPointSelected()`
-7. `buildPairPlot()` → applies `featureFilters`, builds `plotObjIdx` mapping, then builds a manual lower-triangular grid of Plotly subplots; KDE fills on diagonal, scatter off-diagonal
-8. `onPointSelected(idx)` → calls `highlightPoints([idx])`, then `loadObjectDetail()`
-9. `loadObjectDetail(obj)` → fetches LC v1 and (ZTF only) v2 in parallel; cross-matches v2 detections by `candid` to copy `mag_corr`/`e_mag_corr`; normalizes via `normalizeDet()`; renders LC; calls `updateAladin()`
+7. `buildPairPlot()` → applies `featureFilters`, builds `plotObjIdx` mapping, then builds a manual lower-triangular grid of Plotly subplots; KDE fills on diagonal, scatter off-diagonal. Alternative: `buildUmapPlot()` → runs `_runUmap()` for a 2D UMAP embedding.
+8. `onPointSelected(idx, fromView)` → cross-highlights in the non-originating view via `highlightPoints()` / `highlightUmapPoint()`, updates `#selected-info`, then `loadObjectDetail()`
+9. `loadObjectDetail(obj)` → fetches LC v1 and (ZTF only) v2 in parallel; cross-matches v2 detections by `candid` to copy `mag_corr`/`e_mag_corr`; extracts forced-photometry earliest-MJD per band into `forcedPhotMjds` (for FLEET anchor); normalizes via `normalizeDet()`; renders LC; calls `updateAladin()`
 10. `updateAladin(ra, dec, oid)` → lazy-initializes Aladin Lite; reuses instance via `aladinInstance.gotoRaDec()`
 
 ### State variables
@@ -98,9 +110,14 @@ Two draggable dividers:
 | `lcFoldMode` | bool | Phase-fold light curve by `Multiband_period_fid12` |
 | `lcOverlay` | string\|null | Active parametric overlay: `null`, `'spm'`, `'fleet'`, or `'tde_tail'` |
 | `currentDetections` | array | Cached normalized detections for selected object |
+| `forcedPhotMjds` | `{band: mjd}` | Earliest forced-photometry MJD per band (flux > 1 µJy) — anchors FLEET per-band time reference |
 | `pendingRestore` | object\|null | Decoded URL state waiting to be applied |
 | `aladinInstance` / `aladinCat` | Aladin objects | Reused across selections |
 | `selectedIdx` | number | Index into `objectsData` of highlighted point |
+| `activeView` | string | `'pairplot'` or `'umap'` — which main-column plot is visible |
+| `umapScatterTraceIdx` | number\|null | Plotly trace index of the UMAP scatter (single trace) |
+| `umapPlotObjIdx` | number[]\|null | Maps UMAP plot-space index → `objectsData` global index |
+| `umapRunning` | bool | Guards against concurrent `buildUmapPlot()` invocations |
 
 ### Feature list UI
 
@@ -174,7 +191,7 @@ Model (fleet_model in tde_extractor.py):
 mag(t_norm) = exp(w × (t_norm − t₀)) − a × w × (t_norm − t₀) + m₀
 ```
 
-- **Time**: `t_norm = mjd − first_mjd_in_band` — per-band normalization to each band's first detection
+- **Time**: `t_norm = mjd − first_mjd_in_band` — per-band normalization. `first_mjd_in_band` is the earliest of (a) alert detections with `psfFlux > 1 µJy` and (b) forced-photometry points with `psfFlux > 1 µJy` (via `forcedPhotMjds`, populated in `loadObjectDetail` from the v2 `forced_photometry` key). This matches the extractor's reference, which forced-phot frequently pushes earlier than the first alert.
 - **Units**: output is directly in magnitudes (fit was done on diff-image magnitudes); flux mode converts via `10^((23.9 − mag) / 2.5)`
 - **Parameters**: `fleet_a_{band}`, `fleet_w_{band}`, `fleet_m0_{band}`, `fleet_t0_{band}`, `fleet_chi_{band}`
 - **Line style**: dotted
@@ -201,9 +218,55 @@ Plotly's `splom` trace was abandoned because it doesn't support custom diagonal 
 
 **Feature filtering**: before building, `buildPairPlot()` applies `featureFilters` to `objectsData`, producing `plotEntries` (a subset). `plotObjIdx = plotEntries.map(e => e.i)` maps Plotly point indices back to global `objectsData` indices. `onPointSelected` uses `plotObjIdx.indexOf(idx)` to find the correct Plotly point for highlighting.
 
+**Placeholder / building state**: `#pair-plot` is hidden and `#pair-plot-placeholder` is shown before the first build. While `buildPairPlot()` runs, the placeholder switches to a spinning icon (`fa-spinner fa-spin`) with "Building pair plot…" text; on completion it is hidden and `#pair-plot` is shown.
+
+### UMAP view
+
+An alternative 2D embedding of the same feature set, shown in `#umap-plot` instead of the pair plot. Toggled via the view tabs (`switchView('umap')`).
+
+- **Trigger**: `buildUmapPlot()` (via the "Run UMAP" button or the `#btn-view-umap` tab when already built). Guarded by `umapRunning` to prevent concurrent runs.
+- **Library**: `umap-js@1.3.3` loaded on demand via `import('https://esm.sh/umap-js@1.3.3')` with a 15 s timeout; cached on `window._UMAP`.
+- **Feature selection**: uses `getSelectedFeatures()` (same Show-button state as the pair plot); requires ≥ 2 features and ≥ 5 objects after filtering.
+- **Filtering**: applies `featureFilters` the same way `buildPairPlot` does.
+- **Transforms**: applies `featureTransforms` per feature before imputation.
+- **Missing values**: imputed per column via `#umap-impute` — `mean` (default), `median`, or `value` (custom value from `#umap-impute-val`). `normalizeMatrix()` then z-scores each column.
+- **Parameters**: `nNeighbors` (clamped to `nObjs - 1`) from `#umap-n-neighbors`; `minDist` from `#umap-min-dist`.
+- **Fit**: `umapInstance.fitAsync(normalized, epoch => …)` reports progress every 10 epochs via `#umap-ph-text` and the status bar.
+- **Output**: a single Plotly scatter trace colored by class (`classColorMap`) with `selectedpoints` highlight; `umapScatterTraceIdx = 0`, `umapPlotObjIdx` maps plot indices back to global `objectsData` indices.
+- **Cross-highlight**: clicking or box/lasso-selecting in UMAP calls `onPointSelected(globalIdx, 'umap')`, which also calls `highlightPoints()` on the pair plot if it has been built. The inverse direction works the same way from the pair plot.
+
+### Plot toolbar and help panel
+
+Floating toolbar `.plot-toolbar` over the main column:
+- `#btn-box` / `#btn-lasso` → `setDragMode('select'|'lasso')` applies `{dragmode}` to whichever of `#pair-plot` / `#umap-plot` is currently visible and has data.
+- `#btn-help` → `toggleHelp()` shows `#help-panel` (static HTML describing selection, navigation, and plot layout).
+
+### Data table modal
+
+`#dt-modal` is a popup opened by `#btn-data-table` (`openDataTable()`). `renderDataTable()` renders a `<table class="dt">` with columns `[OID, Class, P, …selected features]`:
+- **Sorting**: click a header to call `dtSort(col)` — toggles `dtSortAsc` on the same column, resets to ascending on a different column. `dtSortCol = null` → original `objectsData` order.
+- **Row click**: OID links call `onPointSelected(i); closeDataTable()` to jump to the object.
+- **Selected row**: the row whose global index matches `selectedIdx` is styled `.dt-selected` and scrolled into view.
+- **CSV export**: `downloadDTCSV()` exports the current sort order (same columns as the visible table).
+- Closed by clicking outside the panel, pressing Escape, or the close button.
+
+### CSV downloads
+
+All downloads go through `triggerDownload(content, filename)`; `nowStamp()` provides a UTC timestamp suffix (`YYYY-MM-DD_HHMMSS`).
+
+- **`downloadSampleCSV()`** (`#btn-download-sample`) — full loaded sample: `oid, class_name, probability, meanra, meandec, …allFeatureNames`. Filename `alerce_sample_{classifier}_{stamp}.csv`.
+- **`downloadLCCSV()`** (`#btn-download-lc`) — detections of the currently selected object. The selected overlay's per-band parameters are included as `# ` header comments above the CSV rows. Filename includes `{oid}` and `{stamp}`.
+- **`downloadDTCSV()`** — subset table (selected features only) in current sort order.
+
+### Loading states / spinners
+
+- **Pair plot**: `#pair-plot-placeholder` shows a static icon before the first build; during `buildPairPlot()` it is swapped to `fa-spinner fa-spin` with "Building pair plot…" text.
+- **UMAP**: `umapSetMsg(iconClass, msg)` updates the placeholder icon and text; during `fitAsync` the status bar and placeholder both report "Optimising… epoch N".
+- **Light curve**: `#lc-spinner` is an overlay div positioned on top of `#lc-div` (inside `#lc-wrap`, which is `position: relative`). It must be an overlay — writing "Loading…" into the Plotly div itself breaks Plotly's internal state. Shown during `loadObjectDetail()` and hidden when the LC is rendered or an error occurs.
+
 ### URL state sharing
 
-`captureState()` serializes: survey, classifier, classes, shown features (show button state), transforms, query params (prob, ndet, sample size), feature filters, custom colors, selected OID, and LC display state (flux mode, sci mode, fold mode, overlay) → JSON → `btoa(encodeURIComponent(...))` → `location.hash`.
+`captureState()` serializes: survey, classifier, classes, shown features (show button state), transforms, query params (prob, ndet, sample size), feature filters, custom colors, selected OID, and LC display state (flux mode, sci mode, fold mode, overlay) → JSON → `btoa(encodeURIComponent(...))` → `location.hash`. Query params (`prob`, `ndet`, `sample`, `n`) are captured from the `lastQuery*` globals that `runQuery()` snapshots, not from the input values at share time — this preserves the params that produced the current sample even after the inputs are edited.
 
 `shareState()` (share button `#btn-share`) encodes current state into the hash and copies the full URL to clipboard.
 
@@ -221,9 +284,10 @@ Loaded asynchronously from `aladin.cds.unistra.fr`. `updateAladin()` polls for `
 
 ## External dependencies (CDN, no install)
 
-- Plotly.js 2.27 — pair plot and light curve
+- Plotly.js 2.27 — pair plot, UMAP scatter, and light curve
 - Font Awesome 6.5 — icons
 - Aladin Lite v3 — sky view (async load)
+- `umap-js@1.3.3` — loaded on demand via `esm.sh` when UMAP is first run
 
 ## CSS gotchas
 
