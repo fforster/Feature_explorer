@@ -276,6 +276,36 @@ input.feat-filter {
 input.feat-filter:focus { border-color: var(--accent); }
 input.feat-filter.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
 
+/* VIEW TABS */
+.view-tabs {
+  position: absolute;
+  top: 8px; left: 8px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+}
+
+/* UMAP */
+#umap-plot {
+  display: none;
+  position: absolute;
+  inset: 0;
+}
+#umap-placeholder {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  gap: 12px;
+  pointer-events: none;
+}
+#umap-placeholder i { font-size: 36px; opacity: 0.15; }
+input.umap-param { width: 44px; }
+
 /* MAIN */
 .main-content {
   flex: 1;
@@ -418,7 +448,10 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
   padding: 0 12px 4px;
   flex-shrink: 0;
 }
-#lc-div { flex: 1; min-height: 0; }
+#lc-wrap { flex: 1; min-height: 0; position: relative; }
+#lc-div { width: 100%; height: 100%; }
+#lc-spinner { display: none; position: absolute; inset: 0; align-items: center; justify-content: center;
+  gap: 8px; font-size: 12px; color: var(--text-muted); background: var(--bg-primary); z-index: 5; }
 #aladin-lite-div { flex: 1; min-height: 0; }
 
 .legend-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 10px; }
@@ -433,6 +466,58 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
 }
 .legend-dot.pickable:hover { border-color: #fff; transform: scale(1.15); }
 .color-input { width:0; height:0; opacity:0; position:absolute; pointer-events:none; }
+
+/* DATA TABLE MODAL */
+.dtmodal {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.65);
+  display: none;
+  align-items: center; justify-content: center;
+}
+.dtpanel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 88vw; max-width: 1300px;
+  height: 78vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+}
+.dtpanel-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.dtpanel-head h3 {
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.7px;
+  color: var(--text-muted); margin: 0; flex: 1;
+}
+.dtpanel-body { flex: 1; overflow: auto; }
+table.dt {
+  width: 100%; border-collapse: collapse;
+  font-size: 11px; font-family: monospace;
+}
+table.dt th {
+  position: sticky; top: 0;
+  background: var(--bg-tertiary);
+  padding: 5px 8px; text-align: left;
+  cursor: pointer; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary); user-select: none;
+  font-size: 10px;
+}
+table.dt th:hover { color: var(--accent); }
+table.dt th.sort-asc::after  { content: ' ▲'; font-size: 8px; }
+table.dt th.sort-desc::after { content: ' ▼'; font-size: 8px; }
+table.dt td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary); white-space: nowrap;
+}
+table.dt tr:hover td { background: var(--bg-card); color: var(--text-primary); }
+table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-primary); }
 </style>
 </head>
 <body>
@@ -541,6 +626,27 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
         <button class="btn" style="flex:0 0 auto;" onclick="downloadSampleCSV()" title="Download sample as CSV" id="btn-download-sample">
           <i class="fa-solid fa-download"></i>
         </button>
+        <button class="btn" style="flex:0 0 auto;" onclick="openDataTable()" title="Explore data table" id="btn-data-table">
+          <i class="fa-solid fa-table"></i>
+        </button>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:5px;align-items:center;">
+        <span class="form-label" style="margin:0;white-space:nowrap;font-size:10px;">Neighbors</span>
+        <input type="number" id="umap-n-neighbors" class="umap-param" value="15" min="2" max="200"/>
+        <span class="form-label" style="margin:0;white-space:nowrap;font-size:10px;">min dist</span>
+        <input type="number" id="umap-min-dist" class="umap-param" value="0.1" min="0" max="1" step="0.05"/>
+        <button class="btn sm" style="flex:1;white-space:nowrap;" onclick="switchView('umap'); buildUmapPlot()">
+          <i class="fa-solid fa-circle-nodes"></i> Run UMAP
+        </button>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:4px;align-items:center;">
+        <span class="form-label" style="margin:0;white-space:nowrap;font-size:10px;">NaN fill</span>
+        <select id="umap-impute" style="flex:1;height:22px;font-size:10px;padding:0 4px;" onchange="document.getElementById('umap-impute-val').style.display=this.value==='value'?'':'none'">
+          <option value="mean">mean</option>
+          <option value="median">median</option>
+          <option value="value">value</option>
+        </select>
+        <input type="number" id="umap-impute-val" class="umap-param" value="-99" style="display:none;width:44px;"/>
       </div>
     </div>
 
@@ -554,13 +660,26 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
 
   <div class="resizer" id="sidebar-resizer"></div>
 
-  <!-- PAIR PLOT -->
+  <!-- PAIR PLOT / UMAP -->
   <div class="main-content" id="main-content">
+
+    <!-- View toggle tabs -->
+    <div class="view-tabs">
+      <button class="ptb-btn active" id="btn-view-pairplot" onclick="switchView('pairplot')" title="Pair plot"><i class="fa-solid fa-chart-scatter"></i></button>
+      <button class="ptb-btn"        id="btn-view-umap"     onclick="switchView('umap')"     title="UMAP"><i class="fa-solid fa-circle-nodes"></i></button>
+    </div>
+
     <div id="pair-plot-placeholder">
-      <i class="fa-solid fa-chart-scatter"></i>
-      Query objects, then select features and click "Update Pair Plot"
+      <i id="pp-ph-icon" class="fa-solid fa-chart-scatter"></i>
+      <span id="pp-ph-text">Query objects, then select features and click "Update Pair Plot"</span>
     </div>
     <div id="pair-plot"></div>
+
+    <div id="umap-placeholder">
+      <i id="umap-ph-icon" class="fa-solid fa-circle-nodes"></i>
+      <span id="umap-ph-text">Select features and click "Run UMAP" in the sidebar</span>
+    </div>
+    <div id="umap-plot"></div>
 
     <!-- Floating toolbar (box / lasso / help) -->
     <div class="plot-toolbar">
@@ -617,7 +736,10 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
       <div id="lc-period-info" style="display:none;font-size:10px;color:var(--text-secondary);padding:1px 12px 3px;flex-shrink:0;"></div>
       <div id="lc-spm-info"    style="display:none;font-size:10px;color:var(--text-secondary);padding:1px 12px 4px;flex-shrink:0;font-family:monospace;line-height:1.6;"></div>
       <div id="selected-info">Click a point in the pair plot to load details.</div>
-      <div id="lc-div"></div>
+      <div id="lc-wrap">
+        <div id="lc-div"></div>
+        <div id="lc-spinner"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</div>
+      </div>
     </div>
 
     <div class="rpanel-section">
@@ -628,6 +750,27 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
   </div><!-- /right-panel -->
 
 </div><!-- /app-layout -->
+
+<!-- Data table modal -->
+<div class="dtmodal" id="dt-modal" onclick="if(event.target===this)closeDataTable()">
+  <div class="dtpanel">
+    <div class="dtpanel-head">
+      <h3><i class="fa-solid fa-table" style="color:var(--accent);margin-right:6px;"></i>Data Table</h3>
+      <span id="dt-info" style="font-size:10px;color:var(--text-muted);"></span>
+      <button class="btn sm" style="margin-left:auto;" onclick="downloadDTCSV()" title="Export visible table as CSV"><i class="fa-solid fa-download"></i> CSV</button>
+      <button class="btn sm" style="margin-left:6px;" onclick="closeDataTable()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="dtpanel-body" id="dt-body"></div>
+  </div>
+</div>
+
+<!-- umap-js (loaded as ES module, assigned to window._UMAP for access from main script) -->
+<script type="module">
+  try {
+    const mod = await import('https://esm.sh/umap-js@1.3.3');
+    window._UMAP = mod.UMAP;
+  } catch(_) {}
+</script>
 
 <!-- Aladin Lite v3 -->
 <script>
@@ -643,7 +786,7 @@ input.feat-filter.active { border-color: var(--accent); background: var(--accent
 'use strict';
 
 // Build timestamp — update when the file is regenerated.
-const BUILD_TIME = '2026-04-14T17:44:02Z';
+const BUILD_TIME = '2026-04-17T03:50:18Z';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('build-ts');
   if (el) {
@@ -737,6 +880,16 @@ let featureFilters    = {};     // featureName → { min: number|null, max: numb
 let plotObjIdx        = null;   // maps plot-space point index → objectsData index (null = identity)
 let showOnlySelected  = false;  // when true, feature list shows only checked features
 let pendingRestore    = null;   // decoded URL state waiting to be applied after classifiers/features load
+let activeView        = 'pairplot'; // 'pairplot' | 'umap'
+let umapScatterTraceIdx = null;  // single scatter trace index in UMAP plot
+let umapPlotObjIdx    = null;   // maps umap plot-space index → objectsData index
+let umapRunning       = false;  // prevents concurrent UMAP runs
+
+// Snapshot of query params at the time runQuery() was last called
+let lastQueryProb   = '';
+let lastQueryNdet   = '';
+let lastQuerySample = false;
+let lastQueryN      = '30';
 let aladinInstance = null;
 let aladinCat      = null;
 let selectedIdx    = null;   // index into objectsData of highlighted point
@@ -902,6 +1055,11 @@ async function runQuery() {
   const ndet   = document.getElementById('inp-ndet').value;
   const doSamp = document.getElementById('chk-sample').checked;
   const N      = Math.max(5, parseInt(document.getElementById('n-sample').value) || 30);
+
+  lastQueryProb   = prob;
+  lastQueryNdet   = ndet;
+  lastQuerySample = doSamp;
+  lastQueryN      = String(N);
 
   resetUI();
   setQueryStep('Querying objects…');
@@ -1295,12 +1453,22 @@ function applyTransform(v, xf) {
 
 // ── PAIR PLOT ─────────────────────────────────────────────────────────────────
 
-function buildPairPlot() {
+async function buildPairPlot() {
   const features = getSelectedFeatures();
   const n = features.length;
   if (n < 2) { setStatus('Select at least 2 features.'); return; }
   if (objectsData.length === 0) { setStatus('No objects loaded.'); return; }
   if (n > 12) setStatus(`${n} features selected — plot may be slow. Consider ≤ 8 for best performance.`);
+
+  // Show spinner in placeholder and yield so browser can repaint before heavy sync work
+  const phEl   = document.getElementById('pair-plot-placeholder');
+  const phIcon = document.getElementById('pp-ph-icon');
+  const phText = document.getElementById('pp-ph-text');
+  phIcon.className = 'fa-solid fa-spinner fa-spin';
+  phText.textContent = 'Building pair plot…';
+  phEl.style.display = 'flex';
+  document.getElementById('pair-plot').style.display = 'none';
+  await new Promise(r => setTimeout(r, 50));
 
   // ── Pixel dimensions ──
   const cellPx = Math.max(110, Math.min(180, Math.floor(700 / n)));
@@ -1446,10 +1614,12 @@ function buildPairPlot() {
 
   const plotDiv = document.getElementById('pair-plot');
   plotDiv.style.cssText = `display:block;width:${total}px;height:${total}px;`;
-  document.getElementById('pair-plot-placeholder').style.display = 'none';
 
   Plotly.newPlot(plotDiv, traces, layout, { displayModeBar: false, scrollZoom: true })
     .then(() => {
+      phIcon.className = 'fa-solid fa-chart-scatter';
+      phText.textContent = 'Query objects, then select features and click "Update Pair Plot"';
+      phEl.style.display = 'none';
       plotDiv.on('plotly_click', data => {
         if (!data || !data.points || !data.points.length) return;
         const pt = data.points[0];
@@ -1457,7 +1627,7 @@ function buildPairPlot() {
         const plotIdx = pt.pointIndex;
         if (plotIdx == null) return;
         highlightPoints([plotIdx]);
-        onPointSelected(plotObjIdx ? plotObjIdx[plotIdx] : plotIdx, true);
+        onPointSelected(plotObjIdx ? plotObjIdx[plotIdx] : plotIdx, 'pairplot');
       });
       plotDiv.on('plotly_selected', data => {
         if (!data || !data.points) return;
@@ -1466,10 +1636,14 @@ function buildPairPlot() {
         const plotIdxs = [...new Set(mPts.map(p => p.pointIndex))];
         highlightPoints(plotIdxs);
         const globalIdx0 = plotObjIdx ? plotObjIdx[plotIdxs[0]] : plotIdxs[0];
-        onPointSelected(globalIdx0, true);
+        onPointSelected(globalIdx0, 'pairplot');
         if (plotIdxs.length > 1) setStatus(`${plotIdxs.length} points selected. Showing ${objectsData[globalIdx0].oid}.`);
       });
-      plotDiv.on('plotly_doubleclick', () => { highlightPoints(null); selectedIdx = null; });
+      plotDiv.on('plotly_doubleclick', () => {
+        highlightPoints(null);
+        if (umapPlotObjIdx) highlightUmapPoint(null);
+        selectedIdx = null;
+      });
     });
 
   renderClassLegend();
@@ -1485,11 +1659,225 @@ function highlightPoints(idxs) {
   Plotly.restyle(document.getElementById('pair-plot'), { selectedpoints: sp }, scatterTraceIdxs);
 }
 
-function onPointSelected(idx, keepPlotlySelection) {
+function highlightUmapPoint(idxs) {
+  if (umapScatterTraceIdx == null) return;
+  const umapDiv = document.getElementById('umap-plot');
+  if (umapDiv.style.display === 'none') return;
+  Plotly.restyle(umapDiv, { selectedpoints: [idxs] }, [umapScatterTraceIdx]);
+}
+
+// ── UMAP ──────────────────────────────────────────────────────────────────────
+
+function normalizeMatrix(matrix) {
+  if (!matrix.length) return matrix;
+  const nCols = matrix[0].length;
+  const means = Array(nCols).fill(0);
+  const stds  = Array(nCols).fill(0);
+  matrix.forEach(row => row.forEach((v, j) => { means[j] += v; }));
+  means.forEach((s, j) => { means[j] = s / matrix.length; });
+  matrix.forEach(row => row.forEach((v, j) => { stds[j] += (v - means[j]) ** 2; }));
+  stds.forEach((s, j) => { stds[j] = Math.sqrt(s / matrix.length) || 1; });
+  return matrix.map(row => row.map((v, j) => (v - means[j]) / stds[j]));
+}
+
+function umapSetMsg(iconClass, msg) {
+  document.getElementById('umap-ph-icon').className = iconClass;
+  document.getElementById('umap-ph-text').textContent = msg;
+  document.getElementById('umap-placeholder').style.display = 'flex';
+  document.getElementById('umap-plot').style.display = 'none';
+}
+
+async function buildUmapPlot() {
+  if (umapRunning) { setStatus('UMAP is already running…'); return; }
+  const features = getSelectedFeatures();
+  if (features.length < 2) { setStatus('Select at least 2 features for UMAP.'); return; }
+  if (objectsData.length === 0) { setStatus('No objects loaded.'); return; }
+
+  umapRunning = true;
+  umapSetMsg('fa-solid fa-circle-nodes fa-spin', 'Loading UMAP library…');
+  // Yield so the spinner paints before the blocking knn phase
+  await new Promise(r => setTimeout(r, 50));
+  try {
+    await _runUmap(features);
+  } catch(e) {
+    const msg = e.message || String(e);
+    umapSetMsg('fa-solid fa-triangle-exclamation', msg);
+    setStatus('UMAP error: ' + msg);
+  } finally {
+    umapRunning = false;  // only reset the flag; DOM state is already correct
+  }
+}
+
+async function _runUmap(features) {
+  // Load UMAP library if not yet available (with 15 s timeout)
+  if (!window._UMAP) {
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('UMAP library load timed out (15 s). Check your connection.')), 15000)
+    );
+    const mod = await Promise.race([import('https://esm.sh/umap-js@1.3.3'), timeout]);
+    window._UMAP = mod.UMAP;
+  }
+
+  // Apply feature filters
+  let plotEntries = objectsData.map((obj, i) => ({ obj, i }));
+  for (const [feat, bounds] of Object.entries(featureFilters)) {
+    const { min, max } = bounds;
+    if (min == null && max == null) continue;
+    plotEntries = plotEntries.filter(({ obj }) => {
+      const v = featuresData[obj.oid]?.[feat];
+      if (v == null || !isFinite(v)) return false;
+      if (min != null && v < min) return false;
+      if (max != null && v > max) return false;
+      return true;
+    });
+  }
+
+  // Pre-transform feature values
+  const valCache = {};
+  features.forEach(f => {
+    const xf = featureTransforms[f] || null;
+    valCache[f] = plotEntries.map(({ obj }) => {
+      const v = featuresData[obj.oid]?.[f];
+      return (v != null && isFinite(v)) ? applyTransform(v, xf) : null;
+    });
+  });
+
+  const allObjs   = plotEntries.map(e => e.obj);
+  const allGlobal = plotEntries.map(e => e.i);
+
+  if (allObjs.length < 5) {
+    throw new Error('Too few objects loaded (need ≥ 5).');
+  }
+
+  // Impute missing values
+  const imputeStrategy = document.getElementById('umap-impute').value;
+  const colFill = features.map(f => {
+    const vals = valCache[f].filter(v => v != null);
+    if (vals.length === 0) return 0;
+    if (imputeStrategy === 'median') {
+      const s = [...vals].sort((a, b) => a - b);
+      return s.length % 2 === 0 ? (s[s.length/2-1] + s[s.length/2]) / 2 : s[Math.floor(s.length/2)];
+    }
+    if (imputeStrategy === 'value') {
+      return parseFloat(document.getElementById('umap-impute-val').value) || -99;
+    }
+    // mean (default)
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  });
+  const matrix = plotEntries.map((_, i) => features.map((f, fi) => valCache[f][i] ?? colFill[fi]));
+  const nImputed = plotEntries.reduce((n, _, i) => n + features.filter((f) => valCache[f][i] == null).length, 0);
+
+  const normalized = normalizeMatrix(matrix);
+  const nNeighbors = Math.min(parseInt(document.getElementById('umap-n-neighbors').value) || 15, allObjs.length - 1);
+  const minDist    = parseFloat(document.getElementById('umap-min-dist').value) ?? 0.1;
+
+  const imputeNote = nImputed > 0 ? ` (${nImputed} missing values imputed)` : '';
+  const runMsg = `Running UMAP — ${allObjs.length} objects × ${features.length} features${imputeNote}…`;
+  umapSetMsg('fa-solid fa-circle-nodes fa-spin', runMsg);
+  setStatus(runMsg);
+
+  const umapInstance = new window._UMAP({ nComponents: 2, nNeighbors, minDist });
+  const embedding = await umapInstance.fitAsync(normalized, epoch => {
+    if (epoch % 10 === 0) {
+      const msg = `Optimising… epoch ${epoch}`;
+      setStatus(`UMAP: ${msg}`);
+      document.getElementById('umap-ph-text').textContent = msg;
+    }
+  });
+
+  umapPlotObjIdx = allGlobal;
+
+  const xs = embedding.map(p => p[0]);
+  const ys = embedding.map(p => p[1]);
+
+  const traces = [{
+    type: 'scatter', mode: 'markers',
+    x: xs, y: ys,
+    marker: {
+      color: allObjs.map(obj => classColorMap[obj.class_name] || '#58a6ff'),
+      size: 6, opacity: 0.8, line: { width: 0 },
+    },
+    selected:   { marker: { color: '#fff700', size: 10, opacity: 1.0, line: { color: '#fff', width: 1 } } },
+    unselected: { marker: { opacity: 0.25 } },
+    text: allObjs.map(obj =>
+      `<b>${obj.oid}</b><br>Class: ${obj.class_name || '?'}<br>` +
+      `P=${obj.probability != null ? obj.probability.toFixed(3) : '?'}`
+    ),
+    hovertemplate: '%{text}<extra></extra>',
+    showlegend: false, name: '',
+  }];
+  umapScatterTraceIdx = 0;
+
+  const layout = {
+    paper_bgcolor: '#0d1117', plot_bgcolor: '#0d1117',
+    font: { color: '#8b949e', size: 10, family: 'monospace' },
+    margin: { l: 50, r: 20, t: 30, b: 50 },
+    xaxis: { title: 'UMAP 1', gridcolor: '#21262d', zeroline: false, color: '#5a6370', tickfont: { size: 9 } },
+    yaxis: { title: 'UMAP 2', gridcolor: '#21262d', zeroline: false, color: '#5a6370', tickfont: { size: 9 } },
+    hovermode: 'closest', dragmode: 'select',
+    showlegend: false,
+  };
+
+  const umapDiv = document.getElementById('umap-plot');
+  document.getElementById('umap-placeholder').style.display = 'none';
+  umapDiv.style.display = 'block';
+
+  await Plotly.newPlot(umapDiv, traces, layout, { displayModeBar: false, scrollZoom: true, responsive: true });
+
+  umapDiv.on('plotly_click', data => {
+    if (!data?.points?.length) return;
+    const plotIdx = data.points[0].pointIndex;
+    highlightUmapPoint([plotIdx]);
+    onPointSelected(umapPlotObjIdx[plotIdx], 'umap');
+  });
+  umapDiv.on('plotly_selected', data => {
+    if (!data?.points?.length) return;
+    const plotIdxs = [...new Set(data.points.map(p => p.pointIndex))];
+    const globalIdx0 = umapPlotObjIdx[plotIdxs[0]];
+    onPointSelected(globalIdx0, 'umap');
+    if (plotIdxs.length > 1) setStatus(`${plotIdxs.length} points selected. Showing ${objectsData[globalIdx0].oid}.`);
+  });
+  umapDiv.on('plotly_doubleclick', () => {
+    highlightUmapPoint(null);
+    highlightPoints(null);
+    selectedIdx = null;
+  });
+
+  renderClassLegend();
+  setStatus(`UMAP: ${allObjs.length} objects, ${features.length} features, nNeighbors=${nNeighbors}, minDist=${minDist}${imputeNote}.`);
+}
+
+function switchView(view) {
+  activeView = view;
+  const isPair = view === 'pairplot';
+
+  const pairPlot   = document.getElementById('pair-plot');
+  const pairHolder = document.getElementById('pair-plot-placeholder');
+  const umapPlot   = document.getElementById('umap-plot');
+  const umapHolder = document.getElementById('umap-placeholder');
+
+  const pairBuilt = pairPlot.data && pairPlot.data.length > 0;
+  const umapBuilt = umapPlot.data && umapPlot.data.length > 0;
+
+  pairPlot.style.display   = (isPair && pairBuilt)  ? 'block' : 'none';
+  pairHolder.style.display = (isPair && !pairBuilt) ? 'flex'  : 'none';
+  umapPlot.style.display   = (!isPair && umapBuilt)  ? 'block' : 'none';
+  umapHolder.style.display = (!isPair && !umapBuilt) ? 'flex'  : 'none';
+
+  document.getElementById('btn-view-pairplot').classList.toggle('active',  isPair);
+  document.getElementById('btn-view-umap').classList.toggle('active',     !isPair);
+}
+
+function onPointSelected(idx, fromView = null) {
   selectedIdx = idx;
-  if (!keepPlotlySelection) {
+  // Cross-highlight: update whichever plot we didn't come from
+  if (fromView !== 'pairplot') {
     const plotIdx = plotObjIdx ? plotObjIdx.indexOf(idx) : idx;
-    if (plotIdx >= 0) highlightPoints([plotIdx]);
+    if (plotIdx >= 0 && scatterTraceIdxs.length) highlightPoints([plotIdx]);
+  }
+  if (fromView !== 'umap' && umapPlotObjIdx) {
+    const umapIdx = umapPlotObjIdx.indexOf(idx);
+    if (umapIdx >= 0) highlightUmapPoint([umapIdx]);
   }
 
   const obj   = objectsData[idx];
@@ -1536,6 +1924,8 @@ function normalizeDet(d) {
 
 async function loadObjectDetail(obj) {
   setStatus(`Loading light curve for ${obj.oid}…`);
+  const lcSpinner = document.getElementById('lc-spinner');
+  lcSpinner.style.display = 'flex';
   try {
     const cfg = SC();
     const fetches = [fetch(cfg.lcUrl(obj.oid))];
@@ -1601,6 +1991,7 @@ async function loadObjectDetail(obj) {
     dets.forEach(d => normalizeDet(d));
     dets = dets.filter(d => d.mjd != null && isFinite(d.mjd));
     currentDetections = dets;
+    lcSpinner.style.display = 'none';
     renderLightCurve();
     document.getElementById('lc-btn-sci').style.display = ''; // show once LC is loaded
     if (obj.meanra != null && obj.meandec != null) {
@@ -1609,6 +2000,7 @@ async function loadObjectDetail(obj) {
     setStatus(`${obj.oid} — ${dets.length} detections loaded.`);
   } catch(e) {
     console.error(e);
+    lcSpinner.style.display = 'none';
     setStatus(`LC error for ${obj.oid}: ${e.message}`);
   }
 }
@@ -1866,6 +2258,23 @@ function getCurrentPeriod() {
   return feats['Multiband_period_fid12'] ?? null;
 }
 
+function renderOverlayParams(feats, params, bands, overlayName) {
+  const hasAny = bands.some(band =>
+    params.some(({ key }) => { const v = feats[`${key}_${band}`]; return v != null && isFinite(v); })
+  );
+  if (!hasAny) {
+    return `<span style="color:var(--text-muted);font-style:italic;">No ${overlayName} parameters available for this object.</span>`;
+  }
+  return bands.map(band => {
+    const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
+    const vals = params.map(({ key, label, fmt }) => {
+      const v = feats[`${key}_${band}`];
+      return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
+    }).join('  ');
+    return `<span style="color:${color}">${band}</span>  ${vals}`;
+  }).join('<br>');
+}
+
 function renderLightCurve() {
   // Update selected-info with per-band detection counts now that detections are loaded
   if (selectedIdx != null && currentDetections.length) {
@@ -1899,15 +2308,7 @@ function renderLightCurve() {
       { key: 'SPM_tau_fall', label: 'τ↓',    fmt: v => v.toFixed(2) },
       { key: 'SPM_chi',      label: 'χ²',    fmt: v => v.toFixed(3) },
     ];
-    const rows = ['g', 'r'].map(band => {
-      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
-      const vals = spmParams.map(({ key, label, fmt }) => {
-        const v = feats[`${key}_${band}`];
-        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
-      }).join('  ');
-      return `<span style="color:${color}">${band}</span>  ${vals}`;
-    });
-    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.innerHTML = renderOverlayParams(feats, spmParams, ['g', 'r'], 'SPM');
     overlayInfoEl.style.display = '';
   } else if (lcOverlay === 'fleet' && selectedIdx != null) {
     const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
@@ -1918,15 +2319,7 @@ function renderLightCurve() {
       { key: 'fleet_t0',  label: 't₀',  fmt: v => v.toFixed(2) },
       { key: 'fleet_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
     ];
-    const rows = ['g', 'r'].map(band => {
-      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
-      const vals = fleetParams.map(({ key, label, fmt }) => {
-        const v = feats[`${key}_${band}`];
-        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
-      }).join('  ');
-      return `<span style="color:${color}">${band}</span>  ${vals}`;
-    });
-    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.innerHTML = renderOverlayParams(feats, fleetParams, ['g', 'r'], 'FLEET');
     overlayInfoEl.style.display = '';
   } else if (lcOverlay === 'tde_tail' && selectedIdx != null) {
     const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
@@ -1935,15 +2328,7 @@ function renderLightCurve() {
       { key: 'TDE_decay',     label: 'k',   fmt: v => v.toFixed(3) },
       { key: 'TDE_decay_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
     ];
-    const rows = ['g', 'r'].map(band => {
-      const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
-      const vals = tdeParams.map(({ key, label, fmt }) => {
-        const v = feats[`${key}_${band}`];
-        return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
-      }).join('  ');
-      return `<span style="color:${color}">${band}</span>  ${vals}`;
-    });
-    overlayInfoEl.innerHTML = rows.join('<br>');
+    overlayInfoEl.innerHTML = renderOverlayParams(feats, tdeParams, ['g', 'r'], 'TDE tail');
     overlayInfoEl.style.display = '';
   } else {
     overlayInfoEl.style.display = 'none';
@@ -2171,25 +2556,138 @@ function renderClassLegend() {
   });
 }
 
+// ── DATA TABLE ────────────────────────────────────────────────────────────────
+
+let dtSortCol = null;
+let dtSortAsc = true;
+let dtRows    = [];   // current sorted row order [{i, obj, vals}]
+
+function fmtCell(v) {
+  if (v == null || !isFinite(v)) return '—';
+  if (Number.isInteger(v)) return String(v);
+  if (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-3 && v !== 0)) return v.toExponential(3);
+  return parseFloat(v.toPrecision(4)).toString();
+}
+
+function openDataTable() {
+  if (!objectsData.length) { setStatus('No data loaded.'); return; }
+  dtSortCol = null; dtSortAsc = true;
+  document.getElementById('dt-modal').style.display = 'flex';
+  renderDataTable();
+}
+
+function closeDataTable() {
+  document.getElementById('dt-modal').style.display = 'none';
+}
+
+function renderDataTable() {
+  const features = getSelectedFeatures();
+  const N = objectsData.length;
+
+  // Build base rows
+  dtRows = objectsData.map((obj, i) => ({
+    i,
+    obj,
+    vals: features.map(f => featuresData[obj.oid]?.[f] ?? null),
+  }));
+
+  // Sort
+  if (dtSortCol !== null) {
+    dtRows.sort((a, b) => {
+      let va, vb;
+      if      (dtSortCol === 0) { va = a.obj.oid;              vb = b.obj.oid; }
+      else if (dtSortCol === 1) { va = a.obj.class_name || ''; vb = b.obj.class_name || ''; }
+      else if (dtSortCol === 2) { va = a.obj.probability ?? -1; vb = b.obj.probability ?? -1; }
+      else                      { va = a.vals[dtSortCol - 3] ?? -Infinity; vb = b.vals[dtSortCol - 3] ?? -Infinity; }
+      if (va < vb) return dtSortAsc ? -1 :  1;
+      if (va > vb) return dtSortAsc ?  1 : -1;
+      return 0;
+    });
+  }
+
+  document.getElementById('dt-info').textContent =
+    `${N} objects · ${features.length} feature${features.length !== 1 ? 's' : ''}`;
+
+  const metaHdrs = ['OID', 'Class', 'P'].map((label, ci) => {
+    const cls = dtSortCol === ci ? (dtSortAsc ? 'sort-asc' : 'sort-desc') : '';
+    return `<th class="${cls}" onclick="dtSort(${ci})">${label}</th>`;
+  });
+  const featHdrs = features.map((f, fi) => {
+    const ci = fi + 3;
+    const cls = dtSortCol === ci ? (dtSortAsc ? 'sort-asc' : 'sort-desc') : '';
+    const short = f.length > 18 ? f.slice(0, 16) + '…' : f;
+    return `<th class="${cls}" title="${f}" onclick="dtSort(${ci})">${short}</th>`;
+  });
+
+  const thead = `<thead><tr>${[...metaHdrs, ...featHdrs].join('')}</tr></thead>`;
+
+  const tbody = '<tbody>' + dtRows.map(({ i, obj, vals }) => {
+    const isSel  = i === selectedIdx;
+    const color  = classColorMap[obj.class_name] || '#58a6ff';
+    const cells  = [
+      `<td><span style="color:${color};cursor:pointer;text-decoration:underline dotted;"
+         onclick="onPointSelected(${i});closeDataTable()">${obj.oid}</span></td>`,
+      `<td style="color:${color}">${obj.class_name || '?'}</td>`,
+      `<td>${obj.probability != null ? obj.probability.toFixed(3) : '?'}</td>`,
+      ...vals.map(v => `<td>${fmtCell(v)}</td>`),
+    ];
+    return `<tr class="${isSel ? 'dt-selected' : ''}">${cells.join('')}</tr>`;
+  }).join('') + '</tbody>';
+
+  document.getElementById('dt-body').innerHTML = `<table class="dt">${thead}${tbody}</table>`;
+
+  // Scroll to the selected row
+  const selRow = document.querySelector('#dt-body tr.dt-selected');
+  if (selRow) selRow.scrollIntoView({ block: 'center' });
+}
+
+function dtSort(col) {
+  dtSortAsc = dtSortCol === col ? !dtSortAsc : true;
+  dtSortCol = col;
+  renderDataTable();
+}
+
+function downloadDTCSV() {
+  if (!dtRows.length) return;
+  const features = getSelectedFeatures();
+  const header   = ['oid', 'class_name', 'probability', ...features];
+  const fmt = v => (v == null || (typeof v === 'number' && !isFinite(v))) ? '' : String(v);
+  const rows = dtRows.map(({ obj, vals }) =>
+    [obj.oid, obj.class_name || '', obj.probability ?? '', ...vals.map(fmt)].join(',')
+  );
+  triggerDownload([header.join(','), ...rows].join('\n'), `alerce_table_${nowStamp()}.csv`);
+}
+
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDataTable();
+});
+
 // ── RESET ─────────────────────────────────────────────────────────────────────
 
 function resetUI() {
   objectsData = []; featuresData = {}; allFeatureNames = []; featureTransforms = {}; selectedIdx = null; scatterTraceIdxs = [];
+  umapScatterTraceIdx = null; umapPlotObjIdx = null; umapRunning = false;
   const qr = document.getElementById('query-result');
   qr.style.display = 'none'; qr.innerHTML = '';
   document.getElementById('feat-section').style.display    = 'none';
   document.getElementById('legend-section').style.display  = 'none';
   document.getElementById('feature-list').innerHTML        = '';
   document.getElementById('feat-search').value             = '';
-  document.getElementById('pair-plot-placeholder').style.display = '';
+  switchView('pairplot');
+  document.getElementById('pair-plot-placeholder').style.display = 'flex';
   document.getElementById('pair-plot').style.display       = 'none';
   document.getElementById('pair-plot').innerHTML           = '';
+  document.getElementById('umap-plot').style.display       = 'none';
+  document.getElementById('umap-plot').innerHTML           = '';
+  document.getElementById('umap-placeholder').style.display = 'none';
   document.getElementById('btn-box').classList.add('active');
   document.getElementById('btn-lasso').classList.remove('active');
   document.getElementById('help-panel').style.display      = 'none';
   document.getElementById('btn-help').classList.remove('active');
   document.getElementById('selected-info').textContent     = 'Click a point in the pair plot to load details.';
   document.getElementById('lc-div').innerHTML              = '';
+  document.getElementById('lc-spinner').style.display     = 'none';
   currentDetections = [];
   forcedPhotMjds    = {};
   lcFluxMode = false;
@@ -2217,9 +2715,10 @@ function resetUI() {
 // ── PLOT TOOLBAR ──────────────────────────────────────────────────────────────
 
 function setDragMode(mode) {
-  const plotDiv = document.getElementById('pair-plot');
-  if (plotDiv.style.display === 'none') return;
-  Plotly.relayout(plotDiv, { dragmode: mode });
+  const targets = ['pair-plot', 'umap-plot']
+    .map(id => document.getElementById(id))
+    .filter(el => el.style.display !== 'none' && el.data?.length);
+  targets.forEach(el => Plotly.relayout(el, { dragmode: mode }));
   document.getElementById('btn-box').classList.toggle('active', mode === 'select');
   document.getElementById('btn-lasso').classList.toggle('active', mode === 'lasso');
 }
@@ -2249,12 +2748,9 @@ function captureState() {
     features: getSelectedFeatures(),
     xforms:   Object.fromEntries(Object.entries(featureTransforms).filter(([, v]) => v)),
   };
-  const prob  = document.getElementById('inp-prob').value;
-  const ndet  = document.getElementById('inp-ndet').value;
-  const samp  = document.getElementById('chk-sample').checked;
-  if (prob)  state.prob   = prob;
-  if (ndet)  state.ndet   = ndet;
-  if (samp)  { state.sample = true; state.n = document.getElementById('n-sample').value; }
+  if (lastQueryProb)   state.prob   = lastQueryProb;
+  if (lastQueryNdet)   state.ndet   = lastQueryNdet;
+  if (lastQuerySample) { state.sample = true; state.n = lastQueryN; }
   if (Object.keys(customColors).length) state.colors = customColors;
   // Selected object and LC display state
   if (selectedIdx != null && objectsData[selectedIdx]) {
@@ -2394,12 +2890,16 @@ function initResizer() {
       sidebar.style.width    = w + 'px';
       sidebar.style.minWidth = w + 'px';
       if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+      const _up = document.getElementById('umap-plot');
+      if (_up.style.display !== 'none') Plotly.Plots.resize(_up);
     }
     function onUp() {
       sidebarResizer.classList.remove('dragging');
       document.body.style.cursor     = '';
       document.body.style.userSelect = '';
       if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+      const _up = document.getElementById('umap-plot');
+      if (_up.style.display !== 'none') Plotly.Plots.resize(_up);
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup',   onUp);
     }
@@ -2426,6 +2926,8 @@ function initResizer() {
       rightPanel.style.minWidth = w + 'px';
       // Let Plotly reflow the pair plot as its container shrinks/grows
       if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+      const _up = document.getElementById('umap-plot');
+      if (_up.style.display !== 'none') Plotly.Plots.resize(_up);
     }
 
     function onUp() {
@@ -2433,6 +2935,8 @@ function initResizer() {
       document.body.style.cursor    = '';
       document.body.style.userSelect = '';
       if (pairPlot.style.display !== 'none') Plotly.Plots.resize(pairPlot);
+      const _up = document.getElementById('umap-plot');
+      if (_up.style.display !== 'none') Plotly.Plots.resize(_up);
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup',   onUp);
     }
