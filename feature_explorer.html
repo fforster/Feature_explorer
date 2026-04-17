@@ -581,12 +581,8 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
       </div>
 
       <div class="form-row">
-        <div class="sample-row">
-          <input type="checkbox" id="chk-sample" onchange="document.getElementById('n-sample').disabled=!this.checked"/>
-          <label for="chk-sample">Random sample of</label>
-          <input type="number" id="n-sample" value="30" min="5" max="200" disabled style="width:56px;"/>
-          <label for="n-sample" style="margin-left:-4px;">objects</label>
-        </div>
+        <label class="form-label" for="n-per-class">Max per class</label>
+        <input type="number" id="n-per-class" value="50" min="1" max="500"/>
       </div>
 
       <div style="display:flex;gap:6px;margin-top:2px;">
@@ -786,7 +782,7 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
 'use strict';
 
 // Build timestamp — update when the file is regenerated.
-const BUILD_TIME = '2026-04-17T03:50:18Z';
+const BUILD_TIME = '2026-04-17T16:16:49Z';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('build-ts');
   if (el) {
@@ -887,9 +883,8 @@ let umapRunning       = false;  // prevents concurrent UMAP runs
 
 // Snapshot of query params at the time runQuery() was last called
 let lastQueryProb   = '';
-let lastQueryNdet   = '';
-let lastQuerySample = false;
-let lastQueryN      = '30';
+let lastQueryNdet = '';
+let lastQueryN    = '50';
 let aladinInstance = null;
 let aladinCat      = null;
 let selectedIdx    = null;   // index into objectsData of highlighted point
@@ -961,11 +956,7 @@ async function fetchClassifiers() {
       }
       if (state.prob) document.getElementById('inp-prob').value = state.prob;
       if (state.ndet) document.getElementById('inp-ndet').value = state.ndet;
-      if (state.sample) {
-        document.getElementById('chk-sample').checked = true;
-        document.getElementById('n-sample').disabled = false;
-        if (state.n) document.getElementById('n-sample').value = state.n;
-      }
+      if (state.n)    document.getElementById('n-per-class').value = state.n;
       setStatus(`${SC().name} classifiers loaded. Restoring query…`);
       if (selectedClasses.length > 0) await runQuery();
       else pendingRestore = null;
@@ -1053,20 +1044,18 @@ async function runQuery() {
   const clf    = document.getElementById('sel-classifier').value;
   const prob   = document.getElementById('inp-prob').value;
   const ndet   = document.getElementById('inp-ndet').value;
-  const doSamp = document.getElementById('chk-sample').checked;
-  const N      = Math.max(5, parseInt(document.getElementById('n-sample').value) || 30);
+  const N = Math.max(1, parseInt(document.getElementById('n-per-class').value) || 50);
 
-  lastQueryProb   = prob;
-  lastQueryNdet   = ndet;
-  lastQuerySample = doSamp;
-  lastQueryN      = String(N);
+  lastQueryProb = prob;
+  lastQueryNdet = ndet;
+  lastQueryN    = String(N);
 
   resetUI();
   setQueryStep('Querying objects…');
   setStatus('Querying objects…');
 
   const cfg      = SC();
-  const pageSize = doSamp ? Math.min(N * 4, 100) : 50;
+  const pageSize = Math.min(N, 100);
   let allObjects = [];
 
   try {
@@ -1103,16 +1092,7 @@ async function runQuery() {
       }
       // Ensure class_name is set
       items.forEach(obj => { if (!obj.class_name) obj.class_name = cls; });
-      allObjects = allObjects.concat(items);
-    }
-
-    // Optional random sampling
-    if (doSamp && allObjects.length > N) {
-      for (let i = allObjects.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [allObjects[i], allObjects[j]] = [allObjects[j], allObjects[i]];
-      }
-      allObjects = allObjects.slice(0, N);
+      allObjects = allObjects.concat(items.slice(0, N));
     }
 
     objectsData = allObjects;
@@ -2749,8 +2729,8 @@ function captureState() {
     xforms:   Object.fromEntries(Object.entries(featureTransforms).filter(([, v]) => v)),
   };
   if (lastQueryProb)   state.prob   = lastQueryProb;
-  if (lastQueryNdet)   state.ndet   = lastQueryNdet;
-  if (lastQuerySample) { state.sample = true; state.n = lastQueryN; }
+  if (lastQueryNdet) state.ndet = lastQueryNdet;
+  if (lastQueryN)    state.n   = lastQueryN;
   if (Object.keys(customColors).length) state.colors = customColors;
   // Selected object and LC display state
   if (selectedIdx != null && objectsData[selectedIdx]) {
