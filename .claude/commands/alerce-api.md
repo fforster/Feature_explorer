@@ -1,5 +1,48 @@
 # ALeRCE API Reference
 
+**`feature_explorer.html` uses the multisurvey TAP service (first section below) for all data.** The per-survey REST APIs further down are kept for reference only (legacy; the REST ZTF features come from the old `lc_classifier_1.2.1-P` pipeline, not the reprocessed multisurvey data).
+
+---
+
+## Multisurvey TAP (primary)
+
+- Endpoint: `https://tap.alerce.online/tap` (sync: `/tap/sync`), schema `alerce_tap`, GAVO DaCHS over PostgreSQL. Browse: `https://tap.alerce.online/browse/alerce_tap/multisurvey_lowercase`.
+- Request: `POST /tap/sync` form fields `REQUEST=doQuery&LANG=ADQL&FORMAT=csv&MAXREC=…&QUERY=…`. Errors come back as a VOTable with `<INFO name="QUERY_STATUS" value="ERROR">message</INFO>`.
+- **No CORS headers** (as of 2026-11): browsers can't call it cross-origin; the preflight `OPTIONS` returns 500. A form POST needs no preflight, so only `Access-Control-Allow-Origin` is missing. Use `tap_proxy.py` meanwhile.
+- **Use CSV, not JSON**: JSON returns 64-bit oids as numbers (precision loss in JS).
+- ADQL dialect: no `RAND()`, no scalar subqueries in `WHERE` (use joins); `MOD(oid, k)` works for hash sampling; `ORDER BY probability DESC` is index-backed and fast. ~1.7 s fixed cost per query; little gain beyond ~2 concurrent queries.
+
+### Identity
+
+| Key | Meaning |
+|---|---|
+| `sid` | survey: 0 = ZTF, 1 = LSST DIA object, 2 = LSST solar-system object |
+| `tid` | telescope: 0 = ZTF, 1 = Rubin (used by `classifier`, `feature_name_lut`) |
+| `oid` | int64. ZTF: `(1<<55) + year·26⁷ + base-26 letters` of `ZTFyyabcdefg`. LSST: `diaObjectId` |
+
+Always join per-object tables on `(oid, sid)`. ZTF extension tables (`ztf_detection`, `ztf_forced_photometry`) have no `sid` column: join on `oid + measurement_id`.
+
+### Tables used by the explorer
+
+| Purpose | Table(s) | Key columns |
+|---|---|---|
+| Classifiers | `classifier` | `classifier_id, classifier_name, classifier_version, tid` |
+| Classes | `taxonomy` | `classifier_id, class_id, class_name, taxonomy_order` |
+| Classifications | `probability` | `oid, sid, classifier_id, class_id, classifier_version, probability, ranking` (`ranking = 1` = top class) |
+| Object summary | `object` | `oid, sid, meanra, meandec, n_det, n_forced, firstmjd, lastmjd` |
+| Features | `feature` + `feature_name_lut` + `feature_version_lut` | `oid, sid, feature_id, band, version, feature_value`; only the latest value per object × feature |
+| Bands | `band` | ZTF 1 g, 2 r, 3 i; LSST 1 g, 2 r, 3 i, 4 z, 5 y, **6 u**. `feature.band`: 0 = none, multi-digit = band set (12 = g+r) |
+| ZTF LC | `detection ⋈ ztf_detection`, `forced_photometry ⋈ ztf_forced_photometry`, `ztf_non_detection` | `magpsf, sigmapsf, magpsf_corr, sigmapsf_corr, isdiffpos (±1)`; fp: `mag, e_mag, mag_corr, e_mag_corr, isdiffpos`; limits: `diffmaglim` |
+| LSST LC | `detection ⋈ lsst_detection`, `forced_photometry ⋈ lsst_forced_photometry` | `psfflux, psffluxerr, scienceflux, sciencefluxerr` in **nJy** |
+
+### Model time references (stored as features)
+
+`SPM_mjd_ref` (first observation), `fleet_mjd_ref_{band}` (first point with flux > 1 µJy incl. forced phot), `TDE_mjd_ref_{band}` (brightest point incl. forced phot), `ulens_mjd_ref` (first point with e_mag < 1). Missing for some older LSST feature versions.
+
+---
+
+# Legacy REST APIs
+
 ALeRCE operates two independent API stacks — one for ZTF, one for LSST. They share similar resource names but differ in base URLs, parameter names, and response field names.
 
 ---

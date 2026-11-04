@@ -580,9 +580,18 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
         <input type="number" id="inp-ndet" min="1" step="1" placeholder="e.g. 10 (optional)"/>
       </div>
 
-      <div class="form-row">
-        <label class="form-label" for="n-per-class">Max per class</label>
-        <input type="number" id="n-per-class" value="50" min="1" max="500"/>
+      <div class="form-row" style="display:flex;gap:6px;">
+        <div style="flex:1;min-width:0;">
+          <label class="form-label" for="n-per-class">Max per class</label>
+          <input type="number" id="n-per-class" value="50" min="1" max="2000"/>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <label class="form-label" for="sel-sample">Sampling</label>
+          <select id="sel-sample" title="Top probability: highest-probability objects first. Random: a reproducible pseudo-random subset (hash of the object id).">
+            <option value="top">Top probability</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
       </div>
 
       <div style="display:flex;gap:6px;margin-top:2px;">
@@ -605,6 +614,7 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
         <i class="fa-solid fa-list-check"></i> Features
         <span id="feat-count" style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px;"></span>
       </div>
+      <div id="feat-version" style="display:none;font-size:10px;color:var(--text-muted);margin:-3px 0 6px;" title="Feature extractor versions in this sample (ALeRCE keeps only the latest value per object and feature)"></div>
       <div class="btn-row" style="margin-bottom:7px;">
         <button class="btn sm" onclick="selectAll(true)">All</button>
         <button class="btn sm" onclick="selectAll(false)">None</button>
@@ -716,13 +726,15 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
         <span style="margin-left:auto;display:flex;gap:3px;">
           <button class="ptb-btn active" id="lc-btn-mag"  onclick="toggleLCFluxMode(false)" title="Show magnitude"  style="width:auto;padding:0 6px;font-size:10px;height:22px;">Mag</button>
           <button class="ptb-btn"        id="lc-btn-flux" onclick="toggleLCFluxMode(true)"  title="Show flux in µJy" style="width:auto;padding:0 6px;font-size:10px;height:22px;">Flux</button>
-          <button class="ptb-btn"        id="lc-btn-sci"  onclick="toggleLCSciMode()"       title="Switch between difference image and science (corrected) image — ZTF only" style="width:auto;padding:0 6px;font-size:10px;height:22px;display:none;">Diff</button>
-          <button class="ptb-btn"        id="lc-btn-fold" onclick="toggleLCFoldMode()"      title="Fold by period"  style="width:auto;padding:0 6px;font-size:10px;height:22px;margin-left:4px;"><i class="fa-solid fa-rotate"></i> Fold</button>
+          <button class="ptb-btn"        id="lc-btn-sci"  onclick="toggleLCSciMode()"       title="Switch between difference image and science (corrected) image" style="width:auto;padding:0 6px;font-size:10px;height:22px;display:none;">Diff</button>
+          <button class="ptb-btn active" id="lc-btn-fp" onclick="toggleLCForcedPhot()" title="Show forced photometry (open circles) and ZTF non-detection upper limits (triangles)" style="width:auto;padding:0 6px;font-size:10px;height:22px;">FP</button>
+          <button class="ptb-btn"        id="lc-btn-fold" onclick="toggleLCFoldMode()"      title="Fold by Multiband_period"  style="width:auto;padding:0 6px;font-size:10px;height:22px;"><i class="fa-solid fa-rotate"></i></button>
           <select id="lc-overlay-sel" onchange="toggleLCOverlay(this.value)" title="Parametric model overlay" style="margin-left:6px;height:22px;font-size:10px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:0 4px;cursor:pointer;">
             <option value="none">— overlay —</option>
             <option value="spm">SPM</option>
             <option value="fleet">FLEET</option>
             <option value="tde_tail">TDE tail</option>
+            <option value="ulens">Microlensing</option>
           </select>
           <button class="ptb-btn" onclick="downloadLCCSV()" title="Download light curve as CSV" style="margin-left:6px;width:auto;padding:0 6px;font-size:10px;height:22px;" id="btn-download-lc">
             <i class="fa-solid fa-download"></i>
@@ -782,7 +794,7 @@ table.dt tr.dt-selected td { background: var(--accent-dim); color: var(--text-pr
 'use strict';
 
 // Build timestamp — update when the file is regenerated.
-const BUILD_TIME = '2026-04-17T16:16:49Z';
+const BUILD_TIME = '2026-11-04T03:48:42Z';
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('build-ts');
   if (el) {
@@ -793,38 +805,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 
+// All data comes from the ALeRCE multisurvey TAP service (schema `alerce_tap`).
+// Objects are identified by (sid, oid): sid 0 = ZTF, 1 = LSST DIA object.
+// TAP oids are 64-bit integers → always handled as strings in JS (CSV output, never JSON).
+const TAP_DEFAULT_URL = 'https://tap.alerce.online/tap/sync';
+const TAP_MAXREC      = 2000000;
+const TAP_IN_CHUNK    = 500;   // oids per `IN (…)` list (splitting further is slower: ~1.7 s overhead per query)
+const TAP_CONCURRENCY = 2;     // the service gains little beyond 2 concurrent queries
+const LUT_CACHE_KEY   = 'featureExplorer.lut.v1';
+const LUT_CACHE_TTL   = 12 * 3600 * 1000;  // lookup tables change rarely
+
 const SURVEY_CONFIG = {
-  lsst: {
-    name: 'LSST',
-    base: 'https://api-lsst.alerce.online/',
-    classifiersUrl: () => `https://api-lsst.alerce.online/classifier_api/classifiers`,
-    objectsUrl:     p  => `https://api-lsst.alerce.online/object_api/list_objects?${p}`,
-    featuresUrl:    oid=> `https://api-lsst.alerce.online/feature_api/features?survey_id=lsst&oid=${oid}`,
-    lcUrl:          oid=> `https://api-lsst.alerce.online/lightcurve_api/lightcurve?survey_id=lsst&oid=${oid}`,
-    defaultClassifier: 'stamp_classifier_rubin_beta',
-    priorities: { stamp_classifier_rubin_beta:0, lc_classifier:1, lc_classifier_top:2, lc_classifier_BHRF_forced_phot:3 },
-    extraParams(p) { /* LSST uses class_name natively */ },
-    fidMap: null, // LSST detections carry a `band` string directly
-  },
   ztf: {
     name: 'ZTF',
-    base: 'https://api.alerce.online/ztf/v1/',
-    classifiersUrl: () => `https://api.alerce.online/ztf/v1/classifiers`,
-    objectsUrl:     p  => `https://api.alerce.online/ztf/v1/objects?${p}`,
-    featuresUrl:    oid=> `https://api.alerce.online/ztf/v1/objects/${oid}/features`,
-    lcUrl:          oid=> `https://api.alerce.online/ztf/v1/objects/${oid}/lightcurve`,
-    fpUrl:          oid=> `https://api.alerce.online/v2/lightcurve/lightcurve/${oid}?survey_id=ztf`,
+    sid: 0,
+    tid: 0,
     defaultClassifier: 'lc_classifier_BHRF_forced_phot',
-    priorities: { stamp_classifier:0, lc_classifier_20_06_11:1, lc_classifier_top:2, lc_classifier:3 },
-    extraParams(p) {
-      p.delete('survey');
-      if (p.has('class_name')) { p.set('class', p.get('class_name')); p.delete('class_name'); }
-      if (p.has('n_det')) { p.set('ndet', p.get('n_det')); p.delete('n_det'); }
-      p.set('ranking', '1');
-      p.set('order_by', 'probability');
-      p.set('order_mode', 'DESC');
-    },
-    fidMap: { 1:'g', 2:'r', 3:'i' },
+    priorities: { lc_classifier_BHRF_forced_phot:0, lc_classifier_BHRF_forced_phot_top:1,
+                  lc_classifier_BHRF_forced_phot_transient:2, lc_classifier_BHRF_forced_phot_stochastic:3,
+                  lc_classifier_BHRF_forced_phot_periodic:4, stamp_classifier_2025_beta:5, stamp_classifier:6 },
+    hasNonDetections: true,
+  },
+  lsst: {
+    name: 'LSST',
+    sid: 1,
+    tid: 1,
+    defaultClassifier: 'stamp_classifier_rubin_beta_20260421',
+    priorities: { stamp_classifier_rubin_beta_20260421:0, stamp_classifier_rubin_beta:1, nuclear_classifier:2 },
+    hasNonDetections: false,
   },
 };
 
@@ -842,16 +850,19 @@ const BAND_COLORS = {
   G:'#009E73', R:'#D55E00', I:'#E69F00', U:'#56B4E9', Z:'#CC79A7', Y:'#0072B2',
 };
 
-// ZTF features with fid=0 (non-band) that are typically informative
-const DEFAULT_FEATURES = [
-  'Amplitude','AndersonDarling','Autocor_length','Beyond1Std',
-  'Con','Eta_e','Gskew','MaxSlope','MedianAbsDev','MedianBRP',
-  'PairSlopeTrend','PercentAmplitude','Q31','Skew','StetsonK',
-  'Psi_CS','Psi_eta','Period_fit',
-  // LSST equivalents / common names
-  'amplitude','anderson_darling','beyond1std','eta_e','gskew',
-  'max_slope','median_abs_dev','percent_amplitude','skew','stetson_k',
+// Preferred default pair-plot features, in priority order. selectDefaults() picks the
+// first few that are populated for most of the loaded sample (many variability
+// features are only computed for a subset of objects).
+const DEFAULT_FEATURE_PREFS = [
+  'Multiband_period_gr', 'Multiband_period', 'g-r_mean_gr', 'g-r_mean',
+  'SPM_tau_rise_r', 'SPM_tau_fall_r', 'SPM_gamma_r', 'SPM_beta_r',
+  'GP_DRW_tau_r', 'GP_DRW_sigma_r', 'positive_fraction_r',
+  'Amplitude_r', 'Std_r', 'MHPS_ratio_r', 'Timespan',
 ];
+const DEFAULT_FEATURE_MAX      = 5;
+const DEFAULT_FEATURE_COVERAGE = 0.5;
+// Never auto-select bookkeeping columns
+const DEFAULT_FEATURE_EXCLUDE  = /mjd_ref|^Coordinate_|^P_/;
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 
@@ -869,9 +880,11 @@ let scatterTraceIdxs  = []; // trace indices of scatter subplots (for multi-trac
 let lcFluxMode        = false;  // false = magnitude, true = flux (µJy)
 let lcFoldMode        = false;  // true = fold by period
 let useScienceFlux    = false;  // true = science (corrected) flux, false = difference flux
-let currentDetections = [];     // cached detections for the selected object (avoids re-fetch on toggle)
-let forcedPhotMjds    = {};     // band → min MJD of forced-phot points with psfFlux > 1 µJy (for FLEET anchor)
-let lcOverlay         = null;   // null | 'spm' — parametric model overlay on the light curve
+let currentDetections = [];     // normalized LC points (kind 'det' | 'fp') for the selected object
+let currentNonDets    = [];     // ZTF non-detection upper limits [{mjd, band_name, diffmaglim}]
+let lcShowFP          = true;   // show forced photometry + upper limits on the LC
+let lcOverlay         = null;   // null | 'spm' | 'fleet' | 'tde_tail' | 'ulens' — parametric overlay
+let lcLoadToken       = 0;      // guards against out-of-order LC responses when clicking quickly
 let featureFilters    = {};     // featureName → { min: number|null, max: number|null }
 let plotObjIdx        = null;   // maps plot-space point index → objectsData index (null = identity)
 let showOnlySelected  = false;  // when true, feature list shows only checked features
@@ -885,6 +898,8 @@ let umapRunning       = false;  // prevents concurrent UMAP runs
 let lastQueryProb   = '';
 let lastQueryNdet = '';
 let lastQueryN    = '50';
+let lastQuerySample = 'top';  // 'top' | 'random'
+let lastQuerySeed   = null;   // hash bucket used by random sampling (reproducible via share URL)
 let aladinInstance = null;
 let aladinCat      = null;
 let selectedIdx    = null;   // index into objectsData of highlighted point
@@ -895,6 +910,243 @@ function SC() { return SURVEY_CONFIG[currentSurvey]; }
 
 function setStatus(msg) {
   document.getElementById('status-bar').textContent = msg;
+}
+
+// ── TAP CLIENT ────────────────────────────────────────────────────────────────
+
+class TapUnreachableError extends Error {}
+
+// Candidate sync endpoints, tried in order:
+//   1. ?tap=<url> page parameter (e.g. a proxy elsewhere)
+//   2. the public service (works once it sends CORS headers)
+//   3. same-origin ./tap/sync — served by tap_proxy.py next to this file
+const TAP_URL_STORAGE_KEY = 'featureExplorer.tapUrl';
+
+function tapCandidates() {
+  const out = [];
+  const override = new URLSearchParams(location.search).get('tap');
+  if (override) out.push(/\/sync\/?$/.test(override) ? override : override.replace(/\/$/, '') + '/sync');
+  // Endpoint that worked last time (skips a failing CORS probe on every load)
+  try { const last = localStorage.getItem(TAP_URL_STORAGE_KEY); if (last) out.push(last); } catch (_) {}
+  out.push(TAP_DEFAULT_URL);
+  if (location.protocol.startsWith('http')) out.push(new URL('tap/sync', location.href).href);
+  return [...new Set(out)];
+}
+
+let _tapUrlPromise = null;
+let _tapUrlVerified = false;
+function resolveTapUrl({ probe = false } = {}) {
+  // Fast path: reuse the endpoint that worked last time without spending a probe query;
+  // tapQuery() re-resolves with a probe if it then fails at the network level.
+  if (!_tapUrlPromise && !probe && !new URLSearchParams(location.search).get('tap')) {
+    let last = null;
+    try { last = localStorage.getItem(TAP_URL_STORAGE_KEY); } catch (_) {}
+    if (last) { _tapUrlVerified = false; _tapUrlPromise = Promise.resolve(last); }
+  }
+  if (!_tapUrlPromise) {
+    _tapUrlPromise = (async () => {
+      _tapUrlVerified = true;
+      for (const url of tapCandidates()) {
+        try {
+          const txt = await tapPost(url, 'SELECT TOP 1 sid FROM alerce_tap.sid_lut', 8000);
+          if (txt.startsWith('sid')) {
+            console.log('[tap] using', url);
+            try { localStorage.setItem(TAP_URL_STORAGE_KEY, url); } catch (_) {}
+            return url;
+          }
+        } catch (_) { /* try the next candidate */ }
+      }
+      _tapUrlPromise = null;  // allow a later retry
+      throw new TapUnreachableError(
+        'ALeRCE TAP is not reachable from the browser (the service does not send CORS headers yet). ' +
+        'Run `python3 tap_proxy.py` next to this file and open http://localhost:8765/feature_explorer.html');
+    })();
+  }
+  return _tapUrlPromise;
+}
+
+// Raw TAP sync POST. A form-encoded POST is a CORS "simple request" (no preflight).
+async function tapPost(url, adql, timeoutMs = 120000) {
+  const body = new URLSearchParams({
+    REQUEST: 'doQuery', LANG: 'ADQL', FORMAT: 'csv', MAXREC: String(TAP_MAXREC), QUERY: adql,
+  });
+  const r = await fetch(url, { method: 'POST', body, signal: AbortSignal.timeout(timeoutMs) });
+  const txt = await r.text();
+  if (txt.startsWith('<')) {
+    // VOTable error document: <INFO name="QUERY_STATUS" value="ERROR">message</INFO>
+    const m = txt.match(/QUERY_STATUS"\s+value="ERROR">([\s\S]*?)<\/INFO>/);
+    throw new Error('TAP: ' + (m ? m[1].trim().slice(0, 300) : `HTTP ${r.status}`));
+  }
+  if (!r.ok) throw new Error(`TAP HTTP ${r.status}`);
+  return txt;
+}
+
+// Run an ADQL query → array of row objects (all values are strings; '' = NULL).
+async function tapQuery(adql) {
+  let url = await resolveTapUrl();
+  const t0 = performance.now();
+  let txt;
+  try {
+    txt = await tapPost(url, adql);
+  } catch (e) {
+    // Network/CORS failure on a remembered-but-unverified endpoint → probe the candidates again
+    if (!(e instanceof TypeError) || _tapUrlVerified) throw e;
+    try { localStorage.removeItem(TAP_URL_STORAGE_KEY); } catch (_) {}
+    _tapUrlPromise = null;
+    url = await resolveTapUrl({ probe: true });
+    txt = await tapPost(url, adql);
+  }
+  const rows = parseCSV(txt);
+  console.debug(`[tap] ${Math.round(performance.now() - t0)} ms · ${rows.length} rows · ${adql.slice(0, 140)}`);
+  return rows;
+}
+
+// Minimal RFC 4180 CSV parser → [{col: 'value'}]
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false;
+      } else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  const header = rows.shift() || [];
+  return rows.filter(r => r.length === header.length)
+             .map(r => Object.fromEntries(header.map((h, j) => [h, r[j]])));
+}
+
+const num = s => (s === '' || s == null) ? null : Number(s);
+
+// Run `fn` over `items` with at most `limit` in flight; returns results in order.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i], i); }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+// SQL-quote a string literal for ADQL
+const sqlStr = s => `'${String(s).replace(/'/g, "''")}'`;
+
+// ── OBJECT IDS ────────────────────────────────────────────────────────────────
+// ZTF oids in the multisurvey DB are the idmapper "master id":
+//   (1 << 55) + year·26⁷ + base-26 letters of 'ZTFyyabcdefg'.  LSST oids are diaObjectIds.
+
+const ZTF_PREFIX = 1n << 55n;
+const P26_7      = 26n ** 7n;
+
+function ztfOidToName(oid) {
+  let m; try { m = BigInt(String(oid)); } catch (_) { return null; }
+  if ((m >> 55n) !== 1n) return null;
+  const v = m - ZTF_PREFIX;
+  const year = (v / P26_7) % 100n;
+  let seq = v % P26_7, s = '';
+  for (let i = 6; i >= 0; i--) {
+    const pw = 26n ** BigInt(i);
+    s += String.fromCharCode(Number(seq / pw) + 97);
+    seq %= pw;
+  }
+  return 'ZTF' + String(year).padStart(2, '0') + s;
+}
+
+function ztfNameToOid(name) {
+  const m = /^ZTF(\d{2})([a-z]{7})$/.exec(name || '');
+  if (!m) return null;
+  let v = BigInt(m[1]) * P26_7;
+  for (let i = 0; i < 7; i++) v += BigInt(m[2].charCodeAt(i) - 97) * 26n ** BigInt(6 - i);
+  return String(ZTF_PREFIX + v);
+}
+
+// Display id used throughout the UI, CSVs and share URLs (ZTF name or LSST diaObjectId)
+function displayOid(dbOid, sid) {
+  return sid === 0 ? (ztfOidToName(dbOid) || String(dbOid)) : String(dbOid);
+}
+
+// ── LOOKUP TABLES ─────────────────────────────────────────────────────────────
+// Small tables fetched once per page load.
+
+let LUT = null;
+let _lutPromise = null;
+
+function loadLookups() {
+  if (!_lutPromise) {
+    _lutPromise = (async () => {
+      // Cached in localStorage for LUT_CACHE_TTL: saves five round trips (~5 s) per page load
+      let raw = null;
+      try {
+        const c = JSON.parse(localStorage.getItem(LUT_CACHE_KEY) || 'null');
+        if (c && Date.now() - c.t < LUT_CACHE_TTL) raw = c.raw;
+      } catch (_) {}
+      if (!raw) {
+        const [clf, tax, fname, fver, band] = await mapLimit([
+          'SELECT classifier_id, classifier_name, classifier_version, tid FROM alerce_tap.classifier',
+          'SELECT classifier_id, class_id, class_name, taxonomy_order FROM alerce_tap.taxonomy',
+          'SELECT sid, feature_id, feature_name FROM alerce_tap.feature_name_lut',
+          'SELECT sid, version_id, version_name FROM alerce_tap.feature_version_lut',
+          'SELECT sid, band, band_name, band_order FROM alerce_tap.band',
+        ], 3, q => tapQuery(q));
+        raw = { clf, tax, fname, fver, band };
+        try { localStorage.setItem(LUT_CACHE_KEY, JSON.stringify({ t: Date.now(), raw })); } catch (_) {}
+      }
+      const { clf, tax, fname, fver, band } = raw;
+      const lut = { classifiers: [], classes: {}, featureNames: {}, featureVersions: {}, bands: {} };
+      clf.forEach(r => lut.classifiers.push({
+        id: +r.classifier_id, name: r.classifier_name, version: r.classifier_version, tid: +r.tid }));
+      tax.sort((a, b) => (+a.taxonomy_order) - (+b.taxonomy_order)).forEach(r => {
+        (lut.classes[r.classifier_id] ??= []).push({ id: +r.class_id, name: r.class_name });
+      });
+      fname.forEach(r => { (lut.featureNames[r.sid] ??= {})[r.feature_id] = r.feature_name; });
+      fver.forEach(r => { (lut.featureVersions[r.sid] ??= {})[r.version_id] = r.version_name; });
+      band.sort((a, b) => (+a.band_order) - (+b.band_order)).forEach(r => {
+        (lut.bands[r.sid] ??= {})[r.band] = r.band_name;
+      });
+      LUT = lut;
+      return lut;
+    })().catch(e => { _lutPromise = null; throw e; });
+  }
+  return _lutPromise;
+}
+
+// Band id → name for the current survey ('1' → 'g')
+function bandName(band) {
+  return LUT?.bands[SC().sid]?.[band] ?? `b${band}`;
+}
+
+// Band names of the current survey, in display order (e.g. ['g','r','i'])
+function surveyBands() {
+  return Object.values(LUT?.bands[SC().sid] || {});
+}
+
+// Feature band (0 = none, 1 = g, 12 = g+r, 61 = u+g …) → name suffix ('', '_g', '_gr', '_ug')
+function featureSuffix(band) {
+  const b = String(band);
+  if (b === '0' || b === '') return '';
+  const names = LUT?.bands[SC().sid] || {};
+  return '_' + [...b].map(d => names[d] ?? d).join('');
+}
+
+function currentClassifier() {
+  const name = document.getElementById('sel-classifier').value;
+  return LUT?.classifiers.find(c => c.name === name && c.tid === SC().tid) || null;
 }
 
 // ── SURVEY ────────────────────────────────────────────────────────────────────
@@ -916,29 +1168,23 @@ async function fetchClassifiers() {
   selectedClasses = [];
   renderClassTags();
   try {
-    const r = await fetch(SC().classifiersUrl());
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    let data = await r.json();
-    let list = Array.isArray(data) ? data : (data.classifiers || []);
-
-    list.sort((a, b) => {
-      const pa = SC().priorities[a.classifier_name] ?? 999;
-      const pb = SC().priorities[b.classifier_name] ?? 999;
-      return pa - pb;
-    });
+    setStatus('Connecting to ALeRCE TAP…');
+    await loadLookups();
+    const cfg  = SC();
+    const list = LUT.classifiers
+      .filter(c => c.tid === cfg.tid)
+      .sort((a, b) => (cfg.priorities[a.name] ?? 999) - (cfg.priorities[b.name] ?? 999)
+                      || a.name.localeCompare(b.name));
 
     classifierClasses = {};
-    const seen = [];
     list.forEach(clf => {
-      const name = clf.classifier_name;
-      if (!classifierClasses[name]) { classifierClasses[name] = new Set(); seen.push(name); }
-      (clf.classes || []).forEach(c => classifierClasses[name].add(typeof c === 'string' ? c : c.name));
+      classifierClasses[clf.name] = new Set((LUT.classes[clf.id] || []).map(c => c.name));
     });
 
-    sel.innerHTML = '<option value="">(no classifier filter)</option>';
-    seen.forEach(name => {
+    sel.innerHTML = '';
+    list.forEach(clf => {
       const o = document.createElement('option');
-      o.value = name; o.textContent = name;
+      o.value = clf.name; o.textContent = `${clf.name} (v${clf.version})`;
       sel.appendChild(o);
     });
 
@@ -957,6 +1203,7 @@ async function fetchClassifiers() {
       if (state.prob) document.getElementById('inp-prob').value = state.prob;
       if (state.ndet) document.getElementById('inp-ndet').value = state.ndet;
       if (state.n)    document.getElementById('n-per-class').value = state.n;
+      if (state.smp)  document.getElementById('sel-sample').value  = state.smp;
       setStatus(`${SC().name} classifiers loaded. Restoring query…`);
       if (selectedClasses.length > 0) await runQuery();
       else pendingRestore = null;
@@ -968,8 +1215,9 @@ async function fetchClassifiers() {
       setStatus(`${SC().name} classifiers loaded.`);
     }
   } catch(e) {
+    console.error(e);
     sel.innerHTML = '<option value="">(failed to load)</option>';
-    setStatus(`Classifier load failed: ${e.message}`);
+    setStatus(e instanceof TapUnreachableError ? e.message : `Classifier load failed: ${e.message}`);
   }
 }
 
@@ -1041,72 +1289,94 @@ async function runQuery() {
     setStatus('Please add at least one class before querying.');
     return;
   }
-  const clf    = document.getElementById('sel-classifier').value;
-  const prob   = document.getElementById('inp-prob').value;
-  const ndet   = document.getElementById('inp-ndet').value;
-  const N = Math.max(1, parseInt(document.getElementById('n-per-class').value) || 50);
+  const clf = currentClassifier();
+  if (!clf) { setStatus('Please select a classifier.'); return; }
+  const probStr = document.getElementById('inp-prob').value;
+  const ndetStr = document.getElementById('inp-ndet').value;
+  const N       = Math.max(1, Math.min(2000, parseInt(document.getElementById('n-per-class').value) || 50));
+  const sample  = document.getElementById('sel-sample').value === 'random' ? 'random' : 'top';
+  // Random sampling picks objects whose oid falls in one hash bucket; keep the bucket for share URLs.
+  const seed = sample === 'random'
+    ? (pendingRestore?.seed ?? Math.floor(Math.random() * 97))
+    : null;
 
-  lastQueryProb = prob;
-  lastQueryNdet = ndet;
-  lastQueryN    = String(N);
+  lastQueryProb   = probStr;
+  lastQueryNdet   = ndetStr;
+  lastQueryN      = String(N);
+  lastQuerySample = sample;
+  lastQuerySeed   = seed;
 
   resetUI();
   setQueryStep('Querying objects…');
   setStatus('Querying objects…');
 
-  const cfg      = SC();
-  const pageSize = Math.min(N, 100);
-  let allObjects = [];
+  const cfg   = SC();
+  const prob  = probStr !== '' && isFinite(+probStr) ? +probStr : null;
+  const ndet  = ndetStr !== '' && isFinite(+ndetStr) ? Math.round(+ndetStr) : null;
+  const t0    = performance.now();
 
   try {
-    for (let ci = 0; ci < selectedClasses.length; ci++) {
-      const cls = selectedClasses[ci];
-      setQueryStep(
-        selectedClasses.length > 1 ? `Objects: ${cls}` : 'Querying objects…',
-        selectedClasses.length > 1 ? { done: ci, total: selectedClasses.length } : null
-      );
-      const p = new URLSearchParams();
-      p.set('survey', 'lsst');
-      p.set('page', '1');
-      p.set('page_size', String(pageSize));
-      p.set('count', 'false');
-      if (clf) p.set('classifier', clf);
-      p.set('class_name', cls);
-      if (prob) p.set('probability', prob);
-      if (ndet) p.set('n_det', ndet);  // ZTF extraParams renames this to 'ndet'; LSST uses 'n_det'
-      cfg.extraParams(p);
+    const classIds = Object.fromEntries((LUT.classes[clf.id] || []).map(c => [c.name, c.id]));
 
-      const r = await fetch(cfg.objectsUrl(p.toString()));
-      if (!r.ok) throw new Error(`HTTP ${r.status} for class "${cls}"`);
-      const data = await r.json();
-      let items = data.items || (Array.isArray(data) ? data : []);
-
-      // Normalize ZTF field names
-      if (currentSurvey === 'ztf') {
-        items.forEach(obj => {
-          if (obj.ndet     != null && obj.n_det     == null) obj.n_det     = obj.ndet;
-          if (obj['class'] != null && obj.class_name == null) obj.class_name = obj['class'];
-          if (obj.ra       != null && obj.meanra     == null) obj.meanra    = obj.ra;
-          if (obj.dec      != null && obj.meandec    == null) obj.meandec   = obj.dec;
-        });
+    // One query per class, run in parallel. Each joins probability (top-ranked class)
+    // with object so that the n_det cut and coordinates come back in the same request.
+    let doneClasses = 0;
+    const perClass = await Promise.all(selectedClasses.map(async cls => {
+      const classId = classIds[cls];
+      if (classId == null) throw new Error(`Unknown class "${cls}" for ${clf.name}`);
+      const where = [
+        `p.sid = ${cfg.sid}`, `p.classifier_id = ${clf.id}`, `p.class_id = ${classId}`, 'p.ranking = 1',
+        prob != null ? `p.probability >= ${prob}` : null,
+        ndet != null ? `o.n_det >= ${ndet}` : null,
+      ].filter(Boolean);
+      const base =
+        `SELECT TOP ${N} p.oid, p.probability, o.meanra, o.meandec, o.n_det, o.firstmjd, o.lastmjd ` +
+        `FROM alerce_tap.probability AS p JOIN alerce_tap.object AS o ON o.oid = p.oid AND o.sid = p.sid ` +
+        `WHERE `;
+      let rows;
+      if (sample === 'top') {
+        rows = await tapQuery(base + where.join(' AND ') + ' ORDER BY p.probability DESC');
+      } else {
+        // Hash-bucket sampling: MOD(oid, K) = seed % K is cheap (no full sort). Widen the
+        // bucket (smaller K) until enough objects pass the filters; K = 1 means "all".
+        for (const K of [97, 13, 1]) {
+          const w = K > 1 ? [...where, `MOD(p.oid, ${K}) = ${seed % K}`] : where;
+          rows = await tapQuery(base + w.join(' AND '));
+          if (rows.length >= N) break;
+        }
       }
-      // Ensure class_name is set
-      items.forEach(obj => { if (!obj.class_name) obj.class_name = cls; });
-      allObjects = allObjects.concat(items.slice(0, N));
+      doneClasses++;
+      setQueryStep('Querying objects…', selectedClasses.length > 1 ? { done: doneClasses, total: selectedClasses.length } : null);
+      return rows.map(r => ({
+        oid:         displayOid(r.oid, cfg.sid),
+        dbOid:       r.oid,
+        sid:         cfg.sid,
+        class_name:  cls,
+        probability: num(r.probability),
+        meanra:      num(r.meanra),
+        meandec:     num(r.meandec),
+        n_det:       num(r.n_det),
+        firstmjd:    num(r.firstmjd),
+        lastmjd:     num(r.lastmjd),
+      }));
+    }));
+
+    // Merge; an object can only be top-ranked in one class, but guard against duplicates anyway.
+    const seen = new Set();
+    objectsData = perClass.flat().filter(o => !seen.has(o.dbOid) && seen.add(o.dbOid));
+    if (!objectsData.length) {
+      setStatus('No objects matched the query.');
+      return;
     }
 
-    objectsData = allObjects;
-    setQueryStep('Fetching features…', { done: 0, total: objectsData.length });
-    setStatus(`Got ${objectsData.length} objects. Fetching features…`);
-
-    // Assign class colors
     classColorMap = {};
     selectedClasses.forEach((cls, i) => { classColorMap[cls] = CLASS_PALETTE[i % CLASS_PALETTE.length]; });
 
-    await fetchAllFeatures(objectsData.map(o => o.oid));
+    setStatus(`Got ${objectsData.length} objects. Fetching features…`);
+    await fetchAllFeatures(objectsData, clf);
 
     if (allFeatureNames.length === 0) {
-      setStatus(`${objectsData.length} objects loaded but no features returned. The features API may not be available for this survey.`);
+      setStatus(`${objectsData.length} objects loaded but no features found in TAP.`);
       return;
     }
 
@@ -1118,10 +1388,11 @@ async function runQuery() {
     const qr = document.getElementById('query-result');
     qr.style.display = '';
     qr.innerHTML = `<b style="color:var(--accent)">${objectsData.length}</b> objects &nbsp;·&nbsp; ${classCounts}`;
-    setStatus(`Ready: ${objectsData.length} objects · ${allFeatureNames.length} features. Select features and click "Update Pair Plot".`);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    setStatus(`Ready in ${secs} s: ${objectsData.length} objects · ${allFeatureNames.length} features. Select features and click "Update Pair Plot".`);
   } catch(e) {
     console.error(e);
-    setStatus(`Query failed: ${e.message}`);
+    setStatus(e instanceof TapUnreachableError ? e.message : `Query failed: ${e.message}`);
   } finally {
     setQueryStep(null);
   }
@@ -1129,51 +1400,77 @@ async function runQuery() {
 
 // ── FEATURES ──────────────────────────────────────────────────────────────────
 
-function pivotFeatures(data) {
-  // Handles ZTF format [{name, value, fid}] and possible LSST variants
-  let arr = Array.isArray(data) ? data : (data.features || data.data || []);
-  if (!Array.isArray(arr)) {
-    // Dict format {name: value}
-    return Object.fromEntries(
-      Object.entries(arr).filter(([,v]) => v != null && isFinite(v))
-    );
-  }
+// Bulk-load features for the whole sample from alerce_tap.feature (long format:
+// one row per oid × feature × band; only the latest version is kept per object/feature)
+// and pivot to featuresData[oid] = {name+suffix: value}. Also adds the full probability
+// vector of the active classifier as P_<class> features.
+async function fetchAllFeatures(objs, clf) {
+  const cfg      = SC();
+  const names    = LUT.featureNames[cfg.sid] || {};
+  const versions = LUT.featureVersions[cfg.sid] || {};
+  const classNames = Object.fromEntries((LUT.classes[clf.id] || []).map(c => [c.id, c.name]));
+  const byDb     = new Map(objs.map(o => [o.dbOid, o.oid]));
+  const chunks   = chunk(objs.map(o => o.dbOid), TAP_IN_CHUNK);
 
-  const FID = currentSurvey === 'ztf'
-    ? { 0:'', 1:'_g', 2:'_r', 3:'_i' }
-    : { 0:'', 1:'_u', 2:'_g', 3:'_r', 4:'_i', 5:'_z', 6:'_y' };
-
-  const result = {};
-  arr.forEach(f => {
-    if (f.value == null || !isFinite(f.value)) return;
-    const suffix = FID[f.fid] ?? (f.fid ? `_fid${f.fid}` : '');
-    result[(f.name || f.feature_name) + suffix] = f.value;
-  });
-  return result;
-}
-
-async function fetchAllFeatures(oids) {
-  const BATCH = 10;
   featuresData = {};
-  for (let i = 0; i < oids.length; i += BATCH) {
-    const batch = oids.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(async oid => {
-      try {
-        const r = await fetch(SC().featuresUrl(oid));
-        if (!r.ok) return { oid, features: {} };
-        const data = await r.json();
-        return { oid, features: pivotFeatures(data) };
-      } catch { return { oid, features: {} }; }
-    }));
-    results.forEach(({ oid, features }) => { featuresData[oid] = features; });
-    const done = Math.min(i + BATCH, oids.length);
-    setQueryStep('Fetching features…', { done, total: oids.length });
-    setStatus(`Fetching features… ${done} / ${oids.length}`);
-  }
-
+  objs.forEach(o => { featuresData[o.oid] = {}; });
+  const versionObjs = {};   // version name → Set(oid)
   const nameSet = new Set();
-  Object.values(featuresData).forEach(f => Object.keys(f).forEach(k => nameSet.add(k)));
-  allFeatureNames = [...nameSet].sort();
+  let done = 0;
+  const total = chunks.length * 2;
+  const tick = () => {
+    done++;
+    setQueryStep('Fetching features…', total > 2 ? { done, total } : null);
+  };
+  setQueryStep('Fetching features…', total > 2 ? { done: 0, total } : null);
+
+  const tasks = [];
+  chunks.forEach(ids => {
+    const inList = ids.join(',');
+    tasks.push(async () => {
+      const rows = await tapQuery(
+        `SELECT oid, feature_id, band, version, feature_value FROM alerce_tap.feature ` +
+        `WHERE sid = ${cfg.sid} AND oid IN (${inList})`);
+      rows.forEach(r => {
+        const v = num(r.feature_value);
+        if (v == null || !isFinite(v)) return;
+        const oid  = byDb.get(r.oid);
+        const name = (names[r.feature_id] ?? `feature_${r.feature_id}`) + featureSuffix(r.band);
+        featuresData[oid][name] = v;
+        nameSet.add(name);
+        const ver = versions[r.version] ?? `v${r.version}`;
+        (versionObjs[ver] ??= new Set()).add(oid);
+      });
+      tick();
+    });
+    tasks.push(async () => {
+      const rows = await tapQuery(
+        `SELECT oid, class_id, classifier_version, probability FROM alerce_tap.probability ` +
+        `WHERE sid = ${cfg.sid} AND classifier_id = ${clf.id} AND oid IN (${inList})`);
+      const bestVer = {};  // keep only the newest classifier_version per (oid, class)
+      rows.forEach(r => {
+        const oid = byDb.get(r.oid), cls = classNames[r.class_id];
+        const v = num(r.probability), cv = num(r.classifier_version) ?? 0;
+        if (!oid || cls == null || v == null) return;
+        const key = `P_${cls}`, k2 = oid + '|' + key;
+        if (bestVer[k2] != null && bestVer[k2] > cv) return;
+        bestVer[k2] = cv;
+        featuresData[oid][key] = v;
+        nameSet.add(key);
+      });
+      tick();
+    });
+  });
+  await mapLimit(tasks, TAP_CONCURRENCY, t => t());
+
+  allFeatureNames = [...nameSet].sort((a, b) => a.localeCompare(b));
+
+  const vEl = document.getElementById('feat-version');
+  const vParts = Object.entries(versionObjs)
+    .sort((a, b) => b[1].size - a[1].size)
+    .map(([v, s]) => `${v} (${s.size})`);
+  vEl.textContent = vParts.length ? `Feature version: ${vParts.join(' · ')}` : '';
+  vEl.style.display = vParts.length ? '' : 'none';
 }
 
 // ── FEATURE LIST UI ───────────────────────────────────────────────────────────
@@ -1185,8 +1482,9 @@ function buildFeatureListUI() {
   featureFilters    = {};
   const container = document.getElementById('feature-list');
   container.innerHTML = '';
+  const defaults = new Set(computeDefaultFeatures());
   allFeatureNames.forEach(name => {
-    const checked = DEFAULT_FEATURES.includes(name);
+    const checked = defaults.has(name);
     const item = document.createElement('div');
     item.className = 'feature-item' + (checked ? ' on' : '');
 
@@ -1334,6 +1632,8 @@ function buildFeatureListUI() {
         useScienceFlux = !!state.lcSci;
         lcFoldMode     = !!state.lcFold;
         lcOverlay      = state.lcOverlay || null;
+        lcShowFP       = state.lcFp !== false;
+        document.getElementById('lc-btn-fp').classList.toggle('active', lcShowFP);
         document.getElementById('lc-btn-mag').classList.toggle('active',  !lcFluxMode);
         document.getElementById('lc-btn-flux').classList.toggle('active',  lcFluxMode);
         document.getElementById('lc-btn-fold').classList.toggle('active',  lcFoldMode);
@@ -1389,10 +1689,40 @@ function selectAll(state) {
   });
 }
 
+// Fraction of loaded objects with a finite value for each feature
+function featureCoverage() {
+  const n = objectsData.length || 1;
+  const cov = {};
+  objectsData.forEach(o => {
+    const f = featuresData[o.oid] || {};
+    for (const k in f) cov[k] = (cov[k] || 0) + 1;
+  });
+  for (const k in cov) cov[k] /= n;
+  return cov;
+}
+
+// Pick default pair-plot axes: preferred names that are well populated in this sample,
+// topped up with the best-covered remaining features so there are always ≥ 3 axes.
+function computeDefaultFeatures() {
+  const cov = featureCoverage();
+  const picked = DEFAULT_FEATURE_PREFS
+    .filter(f => (cov[f] || 0) >= DEFAULT_FEATURE_COVERAGE)
+    .slice(0, DEFAULT_FEATURE_MAX);
+  if (picked.length < 3) {
+    allFeatureNames
+      .filter(f => !picked.includes(f) && !DEFAULT_FEATURE_EXCLUDE.test(f))
+      .sort((a, b) => (cov[b] || 0) - (cov[a] || 0))
+      .slice(0, 3 - picked.length)
+      .forEach(f => picked.push(f));
+  }
+  return picked;
+}
+
 function selectDefaults() {
+  const defaults = new Set(computeDefaultFeatures());
   document.querySelectorAll('#feature-list .feature-item').forEach(item => {
     const chk = item.querySelector('input[type="checkbox"]');
-    const on = DEFAULT_FEATURES.includes(chk?.value);
+    const on = defaults.has(chk?.value);
     if (chk) { chk.checked = on; item.classList.toggle('on', on); }
     item.querySelector('.show-btn')?.classList.toggle('active', on);
   });
@@ -1872,128 +2202,136 @@ function onPointSelected(idx, fromView = null) {
 
 // ── LIGHT CURVE ───────────────────────────────────────────────────────────────
 
-function normalizeDet(d) {
-  const fid = SURVEY_CONFIG[currentSurvey].fidMap;
-  // MJD
-  d.mjd = d.mjd ?? d.midpointMjdTai ?? d.midPointTai ?? d.mjd_tai;
-  // Magnitude — difference-image magnitude (NOT mag_corr which is the science/corrected mag)
-  d.mag   = d.mag   ?? d.psf_mag  ?? d.magpsf;
-  d.e_mag = d.e_mag ?? d.sigma_mag ?? d.sigmapsf;
-  // Band
-  if (!d.band_name) {
-    d.band_name = d.band ?? (fid && d.fid != null ? (fid[d.fid] || `fid${d.fid}`) : 'unknown');
+// Every LC point is normalized to:
+//   { kind: 'det'|'fp', mjd, band_name,
+//     mag, e_mag            — difference-image magnitude (null when flux ≤ 0)
+//     psfFlux, psfFluxErr   — signed difference flux, µJy
+//     mag_corr, e_mag_corr  — science (corrected) magnitude
+//     scienceFlux, scienceFluxErr — science flux, µJy }
+// ZTF stores magnitudes (+ isdiffpos sign); LSST stores fluxes in nJy.
+
+const magToFlux    = m => Math.pow(10, (ABZP - m) / 2.5);
+const magErrToFlux = (f, e) => Math.abs(f) * e * Math.LN10 / 2.5;
+const fluxToMag    = f => (f > 0 ? ABZP - 2.5 * Math.log10(f) : null);
+const fluxErrToMag = (f, e) => (f > 0 && e != null ? 2.5 / Math.LN10 * e / f : null);
+
+function ztfPoint(r, kind) {
+  const mag  = num(kind === 'det' ? r.magpsf   : r.mag);
+  const emag = num(kind === 'det' ? r.sigmapsf : r.e_mag);
+  const sign = num(r.isdiffpos) < 0 ? -1 : 1;
+  const p = { kind, mjd: num(r.mjd), band_name: bandName(r.band),
+              mag: null, e_mag: null, psfFlux: null, psfFluxErr: null,
+              mag_corr: null, e_mag_corr: null, scienceFlux: null, scienceFluxErr: null };
+  if (mag != null && isFinite(mag)) {
+    p.psfFlux    = sign * magToFlux(mag);
+    p.psfFluxErr = emag != null ? magErrToFlux(p.psfFlux, emag) : null;
+    // Detections keep their catalogue mag even for negative subtractions (as before);
+    // forced photometry only gets a magnitude when the flux is positive.
+    if (kind === 'det' || sign > 0) { p.mag = mag; p.e_mag = emag; }
   }
-  // Difference flux (µJy) — accept from API (LSST psfFlux) or derive from difference-image magnitude
-  if (d.psfFlux == null) {
-    d.psfFlux    = (d.mag   != null && isFinite(d.mag))   ? Math.pow(10, (ABZP - d.mag)   / 2.5) : null;
-    d.psfFluxErr = (d.e_mag != null && d.psfFlux != null) ? d.psfFlux * d.e_mag * Math.LN10 / 2.5 : null;
-  } else {
-    if (d.psfFluxErr == null) d.psfFluxErr = d.psfFluxSigma ?? d.psfFlux_err ?? null;
+  // Science magnitude: e_mag_corr = 100 is ALeRCE's "unreliable correction" sentinel
+  const mc  = num(kind === 'det' ? r.magpsf_corr   : r.mag_corr);
+  const emc = num(kind === 'det' ? r.sigmapsf_corr : r.e_mag_corr);
+  if (mc != null && mc > 0 && emc != null && emc > 0 && emc < 1.0) {
+    p.mag_corr = mc; p.e_mag_corr = emc;
+    p.scienceFlux    = magToFlux(mc);
+    p.scienceFluxErr = magErrToFlux(p.scienceFlux, emc);
   }
-  // Science (corrected) flux — ZTF: from mag_corr/e_mag_corr.
-  // e_mag_corr = 100.0 is a sentinel for unreliable corrections; discard if >= 1.0 mag.
-  if (d.mag_corr != null && d.mag_corr > 0
-      && d.e_mag_corr != null && d.e_mag_corr > 0 && d.e_mag_corr < 1.0) {
-    d.scienceFlux    = Math.pow(10, (ABZP - d.mag_corr) / 2.5);
-    d.scienceFluxErr = d.scienceFlux * d.e_mag_corr * Math.LN10 / 2.5;
-  } else {
-    d.scienceFlux    = null;
-    d.scienceFluxErr = null;
+  return p;
+}
+
+function lsstPoint(r, kind) {
+  const f   = num(r.psfflux),     fe  = num(r.psffluxerr);
+  const sf  = num(r.scienceflux), sfe = num(r.sciencefluxerr);
+  const p = { kind, mjd: num(r.mjd), band_name: bandName(r.band),
+              psfFlux: f != null ? f / 1000 : null,           // nJy → µJy
+              psfFluxErr: fe != null ? fe / 1000 : null,
+              scienceFlux: sf != null ? sf / 1000 : null,
+              scienceFluxErr: sfe != null ? sfe / 1000 : null };
+  p.mag        = p.psfFlux != null ? fluxToMag(p.psfFlux) : null;
+  p.e_mag      = fluxErrToMag(p.psfFlux, p.psfFluxErr);
+  p.mag_corr   = p.scienceFlux != null ? fluxToMag(p.scienceFlux) : null;
+  p.e_mag_corr = fluxErrToMag(p.scienceFlux, p.scienceFluxErr);
+  return p;
+}
+
+async function fetchLightCurve(obj) {
+  const sid = obj.sid, oid = obj.dbOid;
+  if (sid === 0) {
+    const [det, fp, nd] = await Promise.all([
+      tapQuery(
+        `SELECT d.mjd, d.band, z.magpsf, z.sigmapsf, z.magpsf_corr, z.sigmapsf_corr, z.isdiffpos ` +
+        `FROM alerce_tap.detection AS d JOIN alerce_tap.ztf_detection AS z ` +
+        `ON z.oid = d.oid AND z.measurement_id = d.measurement_id ` +
+        `WHERE d.sid = 0 AND d.oid = ${oid}`),
+      tapQuery(
+        `SELECT f.mjd, f.band, z.mag, z.e_mag, z.mag_corr, z.e_mag_corr, z.isdiffpos ` +
+        `FROM alerce_tap.forced_photometry AS f JOIN alerce_tap.ztf_forced_photometry AS z ` +
+        `ON z.oid = f.oid AND z.measurement_id = f.measurement_id ` +
+        `WHERE f.sid = 0 AND f.oid = ${oid}`),
+      tapQuery(`SELECT mjd, band, diffmaglim FROM alerce_tap.ztf_non_detection WHERE oid = ${oid}`),
+    ]);
+    return {
+      points: [...det.map(r => ztfPoint(r, 'det')), ...fp.map(r => ztfPoint(r, 'fp'))],
+      nondets: nd.map(r => ({ mjd: num(r.mjd), band_name: bandName(r.band), diffmaglim: num(r.diffmaglim) }))
+                 .filter(u => isFinite(u.mjd) && u.diffmaglim != null && u.diffmaglim > 0),
+    };
   }
+  const [det, fp] = await Promise.all([
+    tapQuery(
+      `SELECT d.mjd, d.band, l.psfflux, l.psffluxerr, l.scienceflux, l.sciencefluxerr ` +
+      `FROM alerce_tap.detection AS d JOIN alerce_tap.lsst_detection AS l ` +
+      `ON l.oid = d.oid AND l.measurement_id = d.measurement_id AND l.sid = d.sid ` +
+      `WHERE d.sid = ${sid} AND d.oid = ${oid}`),
+    tapQuery(
+      `SELECT f.mjd, f.band, l.psfflux, l.psffluxerr, l.scienceflux, l.sciencefluxerr ` +
+      `FROM alerce_tap.forced_photometry AS f JOIN alerce_tap.lsst_forced_photometry AS l ` +
+      `ON l.oid = f.oid AND l.measurement_id = f.measurement_id AND l.sid = f.sid ` +
+      `WHERE f.sid = ${sid} AND f.oid = ${oid}`),
+  ]);
+  return { points: [...det.map(r => lsstPoint(r, 'det')), ...fp.map(r => lsstPoint(r, 'fp'))], nondets: [] };
 }
 
 async function loadObjectDetail(obj) {
+  const token = ++lcLoadToken;
   setStatus(`Loading light curve for ${obj.oid}…`);
   const lcSpinner = document.getElementById('lc-spinner');
   lcSpinner.style.display = 'flex';
+  if (obj.meanra != null && obj.meandec != null) updateAladin(obj.meanra, obj.meandec, obj.oid);
   try {
-    const cfg = SC();
-    const fetches = [fetch(cfg.lcUrl(obj.oid))];
-    if (cfg.fpUrl) fetches.push(fetch(cfg.fpUrl(obj.oid)));
-    const [lcResp, fpResp] = await Promise.all(fetches);
-    if (!lcResp.ok) throw new Error(`HTTP ${lcResp.status}`);
-    const data = await lcResp.json();
-    let dets = data.detections || (Array.isArray(data) ? data : []);
-
-    // ZTF: v2 endpoint carries mag_corr/e_mag_corr; cross-match by candid.
-    // Also check if v1 already has mag_corr (some objects do).
-    const hasMagCorr = dets.some(d => d.mag_corr != null);
-    if (!hasMagCorr && fpResp) {
-      console.log('[sci-flux] v2 status:', fpResp.status, fpResp.url);
-      if (fpResp.ok) {
-        try {
-          const fpData = await fpResp.json();
-          console.log('[sci-flux] v2 response keys:', Object.keys(fpData), 'det count:', (fpData.detections||[]).length);
-          const v2Dets = fpData.detections || [];
-          if (v2Dets.length > 0) {
-            console.log('[sci-flux] sample v2 det:', JSON.stringify(v2Dets[0]).slice(0, 200));
-            const v2Map = new Map(v2Dets.map(d => [String(d.candid), d]));
-            let enriched = 0;
-            dets.forEach(d => {
-              const v2 = v2Map.get(String(d.candid));
-              if (v2 && v2.mag_corr != null) {
-                d.mag_corr   = v2.mag_corr;
-                d.e_mag_corr = v2.e_mag_corr;
-                enriched++;
-              }
-            });
-            console.log(`[sci-flux] enriched ${enriched}/${dets.length} detections with mag_corr`);
-
-            // Extract forced-photometry records from v2 response.
-            // These have mag/e_mag/isdiffpos/fid but no magpsf.
-            // They extend the timeline before the first alert detection and are
-            // needed to anchor the FLEET model's per-band time reference.
-            const fpArr = fpData.forced_photometry || fpData.forcedPhotometry || [];
-            forcedPhotMjds = {};
-            const fidMap = SURVEY_CONFIG[currentSurvey].fidMap;
-            fpArr.forEach(fp => {
-              if (!isFinite(fp.mjd) || fp.mag == null || !isFinite(fp.mag)) return;
-              const band = fidMap ? fidMap[fp.fid] : fp.band;
-              if (!band) return;
-              // Signed flux in µJy (ABZP=23.9), matching the extractor's brightness > 1 filter
-              const ip   = fp.isdiffpos;
-              const sign = (ip === 1 || ip === '1' || ip === true || ip === 't') ? 1 : -1;
-              const flux = sign * Math.pow(10, (ABZP - fp.mag) / 2.5);
-              if (flux <= 1) return;  // extractor filters to brightness > 1 µJy
-              if (!forcedPhotMjds[band] || fp.mjd < forcedPhotMjds[band])
-                forcedPhotMjds[band] = fp.mjd;
-            });
-            console.log('[fleet] forced-phot first MJDs per band:', forcedPhotMjds, `(${fpArr.length} fp records)`);
-          }
-        } catch(e) { console.warn('[sci-flux] v2 parse error:', e); }
-      } else {
-        console.warn('[sci-flux] v2 fetch failed:', fpResp.status);
-      }
-    } else if (hasMagCorr) {
-      console.log('[sci-flux] v1 already has mag_corr — no v2 fetch needed');
-    }
-
-    dets.forEach(d => normalizeDet(d));
-    dets = dets.filter(d => d.mjd != null && isFinite(d.mjd));
-    currentDetections = dets;
+    const { points, nondets } = await fetchLightCurve(obj);
+    if (token !== lcLoadToken) return;  // a newer selection superseded this one
+    currentDetections = points.filter(p => p.mjd != null && isFinite(p.mjd)).sort((a, b) => a.mjd - b.mjd);
+    currentNonDets    = nondets;
     lcSpinner.style.display = 'none';
     renderLightCurve();
-    document.getElementById('lc-btn-sci').style.display = ''; // show once LC is loaded
-    if (obj.meanra != null && obj.meandec != null) {
-      updateAladin(obj.meanra, obj.meandec, obj.oid);
-    }
-    setStatus(`${obj.oid} — ${dets.length} detections loaded.`);
+    document.getElementById('lc-btn-sci').style.display = '';
+    const nDet = currentDetections.filter(p => p.kind === 'det').length;
+    const nFp  = currentDetections.length - nDet;
+    setStatus(`${obj.oid} — ${nDet} detections, ${nFp} forced-photometry points` +
+              (nondets.length ? `, ${nondets.length} upper limits` : '') + '.');
   } catch(e) {
+    if (token !== lcLoadToken) return;
     console.error(e);
     lcSpinner.style.display = 'none';
     setStatus(`LC error for ${obj.oid}: ${e.message}`);
   }
 }
 
-// ── SPM PARAMETRIC OVERLAY ────────────────────────────────────────────────────
+// ── PARAMETRIC MODEL OVERLAYS ─────────────────────────────────────────────────
+//
+// Model parameters come from alerce_tap.feature. Each model's time reference is
+// stored alongside it as a feature (verified against the photometry):
+//   SPM_mjd_ref          first observation (any band, detections + forced phot)
+//   fleet_mjd_ref_{band} first point with flux > 1 µJy in the band
+//   TDE_mjd_ref_{band}   brightest point in the band (t_peak)
+//   ulens_mjd_ref        first point with e_mag < 1 (any band)
+// Older feature versions (e.g. some LSST objects) lack the *_mjd_ref features, so each
+// one falls back to the equivalent value derived from the loaded detections + forced phot.
 
-// Sánchez-Sáez+2021 Eq. A5 — Stochastic-Parametric Model (SPM)
-// t     : time in days relative to the first detection of the source
-// A     : flux amplitude
-// beta  : plateau ratio (0 < beta < 1)
-// t0    : onset time (days, relative to first detection)
-// gamma : rise duration (t1 = t0 + gamma)
-// tau_rise, tau_fall : rise/fall timescales (days)
+// Sánchez-Sáez+2021 Eq. A5 — Supernova Parametric Model (SPM)
+// t: days since SPM_mjd_ref; A: flux amplitude (mJy); beta: plateau ratio;
+// t0: onset; gamma: rise duration (t1 = t0 + gamma); tau_rise, tau_fall: timescales (days)
 function spmFlux(t, A, beta, t0, gamma, tau_rise, tau_fall) {
   const t1   = t0 + gamma;
   const clamp = x => Math.max(-500, Math.min(500, x));
@@ -2013,212 +2351,154 @@ function spmFlux(t, A, beta, t0, gamma, tau_rise, tau_fall) {
   return rise * (1 - s) + fall * s;
 }
 
-// Build Plotly line traces for the SPM overlay on the current light curve.
-// Returns [] if lcOverlay !== 'spm', no features, or no detections.
-function computeSPMTraces(useFlux) {
-  if (lcOverlay !== 'spm') return [];
-  if (selectedIdx == null || !currentDetections.length) return [];
-  const obj   = objectsData[selectedIdx];
-  if (!obj) return [];
-  const feats = featuresData[obj.oid];
-  if (!feats) return [];
-
-  // Global time reference: MJD of the first (earliest) detection across all bands
-  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
-  if (!allMjds.length) return [];
-  const firstMjd = Math.min(...allMjds);
-  const tMax     = Math.max(...allMjds) - firstMjd;
-
-  // 100-point time grid spanning all detections
-  const tGrid   = Array.from({length: 100}, (_, i) => tMax * i / 99);
-  const mjdGrid = tGrid.map(t => t + firstMjd);
-
-  const traces = [];
-  const overlayBands = ['g', 'r', 'i'];
-
-  for (const band of overlayBands) {
-    const A        = feats[`SPM_A_${band}`];
-    const beta     = feats[`SPM_beta_${band}`];
-    const t0       = feats[`SPM_t0_${band}`];
-    const gamma    = feats[`SPM_gamma_${band}`];
-    const tau_rise = feats[`SPM_tau_rise_${band}`];
-    const tau_fall = feats[`SPM_tau_fall_${band}`];
-
-    if ([A, beta, t0, gamma, tau_rise, tau_fall].some(v => v == null || !isFinite(v))) continue;
-    if (gamma <= 0 || tau_rise <= 0 || tau_fall <= 0) continue;
-
-    const x = [], y = [];
-    tGrid.forEach((t, i) => {
-      // SPM_A is in mJy (the feature extractor multiplies µJy by 0.001 before fitting,
-      // for backwards compatibility with the old mJy-based SPM).
-      // Display flux (psfFlux) is in µJy (ABZP = 23.9), so scale up by 1000.
-      const fVal_mJy = spmFlux(t, A, beta, t0, gamma, tau_rise, tau_fall);
-      const fVal = fVal_mJy * 1000;  // mJy → µJy
-      let yVal;
-      if (useFlux) {
-        yVal = fVal;
-      } else {
-        // Convert µJy → AB mag
-        yVal = (fVal > 0) ? (ABZP - 2.5 * Math.log10(fVal)) : null;
-      }
-      if (yVal != null && isFinite(yVal)) {
-        x.push(mjdGrid[i]);
-        y.push(yVal);
-      } else {
-        x.push(null);  // gap
-        y.push(null);
-      }
-    });
-
-    if (x.some(v => v != null)) {
-      traces.push({
-        x, y,
-        mode: 'lines',
-        name: `SPM ${band}`,
-        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dash', width: 1.5 },
-        type: 'scatter',
-        connectgaps: false,
-        showlegend: true,
-      });
-    }
-  }
-  return traces;
-}
-
-// FLEET model: mag(t_norm) = exp(w*(t_norm-t0)) - a*w*(t_norm-t0) + m0
-// t_norm = mjd - first_mjd_in_band (per-band normalization)
-// Output is directly in magnitudes.
+// FLEET model (tde_extractor.fleet_model), output in magnitudes
+// t_norm = mjd − fleet_mjd_ref_{band}
 function fleetMag(t_norm, a, w, m0, t0) {
   const dt = t_norm - t0;
   return Math.exp(w * dt) - a * w * dt + m0;
 }
 
-// Build Plotly line traces for the FLEET overlay.
-// Returns [] if lcOverlay !== 'fleet', no features, or no detections.
-function computeFleetTraces(useFlux) {
-  if (lcOverlay !== 'fleet') return [];
-  if (selectedIdx == null || !currentDetections.length) return [];
-  const obj = objectsData[selectedIdx];
-  if (!obj) return [];
-  const feats = featuresData[obj.oid];
-  if (!feats) return [];
-
-  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
-  if (!allMjds.length) return [];
-  const globalMin = Math.min(...allMjds);
-  const globalMax = Math.max(...allMjds);
-
-  const traces = [];
-  for (const band of ['g', 'r', 'i']) {
-    const a  = feats[`fleet_a_${band}`];
-    const w  = feats[`fleet_w_${band}`];
-    const m0 = feats[`fleet_m0_${band}`];
-    const t0 = feats[`fleet_t0_${band}`];
-    if ([a, w, m0, t0].some(v => v == null || !isFinite(v))) continue;
-
-    // Per-band time reference: match the extractor's first_mjd.
-    // The extractor uses detections + forced photometry filtered to flux > 1 µJy.
-    // Use the earliest of: alert detections and forced-phot points (from v2, if any).
-    const alertMjds = currentDetections
-      .filter(d => d.band_name === band && isFinite(d.mjd) && isFinite(d.psfFlux) && d.psfFlux > 1)
-      .map(d => d.mjd);
-    const alertFirst  = alertMjds.length ? Math.min(...alertMjds) : globalMin;
-    const fpFirst     = forcedPhotMjds[band] ?? alertFirst;
-    const firstMjdBand = Math.min(alertFirst, fpFirst);
-
-    // 100-point grid across all detections (global MJD range)
-    const x = [], y = [];
-    for (let i = 0; i < 100; i++) {
-      const mjd    = globalMin + (globalMax - globalMin) * i / 99;
-      const t_norm = mjd - firstMjdBand;
-      const mag    = fleetMag(t_norm, a, w, m0, t0);
-      if (!isFinite(mag)) { x.push(null); y.push(null); continue; }
-      let yVal;
-      if (useFlux) {
-        yVal = Math.pow(10, (ABZP - mag) / 2.5);  // mag → µJy
-      } else {
-        yVal = mag;
-      }
-      x.push(mjd);
-      y.push(isFinite(yVal) ? yVal : null);
-    }
-
-    if (x.some(v => v != null)) {
-      traces.push({
-        x, y,
-        mode: 'lines',
-        name: `FLEET ${band}`,
-        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dot', width: 1.5 },
-        type: 'scatter',
-        connectgaps: false,
-        showlegend: true,
-      });
-    }
-  }
-  return traces;
+// Point-lens microlensing (ulens_extractor.ulens_model), output in magnitudes
+// t = mjd − ulens_mjd_ref
+function ulensMag(t, u0, tE, fs, t0, mag0) {
+  const u = Math.sqrt(u0 * u0 + Math.pow((t - t0) / tE, 2));
+  const A = (u * u + 2) / (u * Math.sqrt(u * u + 4));
+  return -2.5 * Math.log10(fs * (A - 1) + 1) + mag0;
 }
 
-// TDE tail model: mag(t) = TDE_mag0 + TDE_decay * 2.5 * log10(t - t_peak + 40)
-// t_peak = MJD of brightest (min mag) detection in the band (derived from data, not stored).
-// Valid only for t > t_peak. Output is in difference-image magnitudes.
-function computeTDETailTraces(useFlux) {
-  if (lcOverlay !== 'tde_tail') return [];
-  if (selectedIdx == null || !currentDetections.length) return [];
-  const obj = objectsData[selectedIdx];
-  if (!obj) return [];
-  const feats = featuresData[obj.oid];
-  if (!feats) return [];
+const finiteAll = vals => vals.every(v => v != null && isFinite(v));
 
-  const allMjds = currentDetections.map(d => d.mjd).filter(v => isFinite(v));
-  if (!allMjds.length) return [];
-  const globalMin = Math.min(...allMjds);
-  const globalMax = Math.max(...allMjds);
+// Fallback reference times derived from the loaded photometry (detections + forced phot)
+function derivedFirstMjd(pred) {
+  const m = currentDetections.filter(pred).map(d => d.mjd);
+  return m.length ? Math.min(...m) : null;
+}
+function derivedPeakMjd(band) {
+  const pts = currentDetections.filter(d => d.band_name === band && d.psfFlux > 0 &&
+    d.mag != null && d.mag < 30 && d.e_mag != null && d.e_mag < 1.0);
+  return pts.length ? pts.reduce((b, d) => d.mag < b.mag ? d : b).mjd : null;
+}
 
+function overlayRefs(feats) {
+  return {
+    spm:   feats.SPM_mjd_ref   ?? derivedFirstMjd(() => true),
+    ulens: feats.ulens_mjd_ref ?? derivedFirstMjd(d => d.e_mag != null && d.e_mag < 1.0),
+    fleet: band => feats[`fleet_mjd_ref_${band}`] ?? derivedFirstMjd(d => d.band_name === band && d.psfFlux > 1),
+    tde:   band => feats[`TDE_mjd_ref_${band}`]   ?? derivedPeakMjd(band),
+  };
+}
+
+const OVERLAY_DEFS = {
+  spm: {
+    label: 'SPM', dash: 'dash',
+    params: [
+      { key: 'SPM_A',        label: 'A',  fmt: v => v.toFixed(3) },
+      { key: 'SPM_beta',     label: 'β',  fmt: v => v.toFixed(3) },
+      { key: 'SPM_t0',       label: 't₀', fmt: v => v.toFixed(2) },
+      { key: 'SPM_gamma',    label: 'γ',  fmt: v => v.toFixed(2) },
+      { key: 'SPM_tau_rise', label: 'τ↑', fmt: v => v.toFixed(2) },
+      { key: 'SPM_tau_fall', label: 'τ↓', fmt: v => v.toFixed(2) },
+      { key: 'SPM_chi',      label: 'χ²', fmt: v => v.toFixed(3) },
+    ],
+  },
+  fleet: {
+    label: 'FLEET', dash: 'dot',
+    params: [
+      { key: 'fleet_a',   label: 'a',  fmt: v => v.toFixed(3) },
+      { key: 'fleet_w',   label: 'w',  fmt: v => v.toFixed(4) },
+      { key: 'fleet_m0',  label: 'm₀', fmt: v => v.toFixed(2) },
+      { key: 'fleet_t0',  label: 't₀', fmt: v => v.toFixed(2) },
+      { key: 'fleet_chi', label: 'χ²', fmt: v => v.toFixed(2) },
+    ],
+  },
+  tde_tail: {
+    label: 'TDE tail', dash: 'dashdot',
+    params: [
+      { key: 'TDE_mag0',      label: 'm₀', fmt: v => v.toFixed(2) },
+      { key: 'TDE_decay',     label: 'k',  fmt: v => v.toFixed(3) },
+      { key: 'TDE_decay_chi', label: 'χ²', fmt: v => v.toFixed(2) },
+    ],
+  },
+  ulens: {
+    label: 'µlens', dash: 'longdash',
+    params: [
+      { key: 'ulens_u0',   label: 'u₀',  fmt: v => v.toFixed(3) },
+      { key: 'ulens_tE',   label: 't_E', fmt: v => v.toFixed(2) },
+      { key: 'ulens_fs',   label: 'f_s', fmt: v => v.toFixed(3) },
+      { key: 'ulens_t0',   label: 't₀',  fmt: v => v.toFixed(2) },
+      { key: 'ulens_mag0', label: 'm₀',  fmt: v => v.toFixed(2) },
+      { key: 'ulens_chi',  label: 'χ²',  fmt: v => v.toFixed(2) },
+    ],
+  },
+};
+
+// Model value at `mjd` for `band`, in µJy (flux mode) or AB mag; null if undefined there.
+function overlayValue(kind, feats, refs, band, mjd, useFlux) {
+  const p = key => feats[`${key}_${band}`];
+  const toY = mag => {
+    if (mag == null || !isFinite(mag)) return null;
+    return useFlux ? magToFlux(mag) : mag;
+  };
+  if (kind === 'spm') {
+    const v = ['SPM_A', 'SPM_beta', 'SPM_t0', 'SPM_gamma', 'SPM_tau_rise', 'SPM_tau_fall'].map(p);
+    if (!finiteAll(v) || refs.spm == null || v[3] <= 0 || v[4] <= 0 || v[5] <= 0) return undefined;
+    // SPM_A is in mJy (the extractor scales µJy by 0.001) → ×1000 for µJy display
+    const f = spmFlux(mjd - refs.spm, ...v) * 1000;
+    return useFlux ? f : fluxToMag(f);
+  }
+  if (kind === 'fleet') {
+    const v = ['fleet_a', 'fleet_w', 'fleet_m0', 'fleet_t0'].map(p);
+    const ref = refs.fleet(band);
+    if (!finiteAll(v) || ref == null) return undefined;
+    return toY(fleetMag(mjd - ref, ...v));
+  }
+  if (kind === 'tde_tail') {
+    const v = ['TDE_mag0', 'TDE_decay'].map(p);
+    const tPeak = refs.tde(band);
+    if (!finiteAll(v) || tPeak == null) return undefined;
+    if (mjd <= tPeak) return null;  // post-peak model only
+    return toY(v[0] + v[1] * 2.5 * Math.log10(mjd - tPeak + 40));
+  }
+  if (kind === 'ulens') {
+    const v = ['ulens_u0', 'ulens_tE', 'ulens_fs', 'ulens_t0', 'ulens_mag0'].map(p);
+    if (!finiteAll(v) || refs.ulens == null || v[1] <= 0) return undefined;
+    return toY(ulensMag(mjd - refs.ulens, ...v));
+  }
+  return undefined;
+}
+
+// Plotly line traces for the active overlay over [mjdMin, mjdMax]
+function computeOverlayTraces(useFlux, mjdMin, mjdMax) {
+  const def = OVERLAY_DEFS[lcOverlay];
+  if (!def || selectedIdx == null || !currentDetections.length) return [];
+  const feats = featuresData[objectsData[selectedIdx]?.oid];
+  if (!feats || !isFinite(mjdMin) || !isFinite(mjdMax)) return [];
+  const refs = overlayRefs(feats);
+  const NPTS = 200;
   const traces = [];
-  for (const band of ['g', 'r', 'i']) {
-    const decay = feats[`TDE_decay_${band}`];
-    const mag0  = feats[`TDE_mag0_${band}`];
-    if ([decay, mag0].some(v => v == null || !isFinite(v))) continue;
-
-    // Find t_peak: MJD of the brightest (min mag) detection in this band,
-    // matching the extractor's filter: e_mag < 1.0 and mag < 30.
-    const bandDets = currentDetections.filter(d =>
-      d.band_name === band && isFinite(d.mag) && d.mag < 30 &&
-      isFinite(d.e_mag) && d.e_mag < 1.0
-    );
-    if (!bandDets.length) continue;
-    const tPeak   = bandDets.reduce((best, d) => d.mag < best.mag ? d : best).mjd;
-    const bandMax = Math.max(...bandDets.map(d => d.mjd));
-
-    // 100-point grid from t_peak to the last detection in this band (no extrapolation)
+  for (const band of surveyBands()) {
+    // TDE tail: grid starts at t_peak; others span the plotted range
+    let lo = mjdMin;
+    if (lcOverlay === 'tde_tail') {
+      const tp = refs.tde(band);
+      if (tp == null) continue;
+      lo = Math.max(mjdMin, tp);
+    }
     const x = [], y = [];
-    for (let i = 0; i < 100; i++) {
-      const mjd = tPeak + (bandMax - tPeak) * i / 99;
-      const dt  = mjd - tPeak;
-      if (dt <= 0) { x.push(null); y.push(null); continue; }
-      const mag = mag0 + decay * 2.5 * Math.log10(dt + 40);
-      if (!isFinite(mag)) { x.push(null); y.push(null); continue; }
-      let yVal;
-      if (useFlux) {
-        yVal = Math.pow(10, (ABZP - mag) / 2.5);  // mag → µJy
-      } else {
-        yVal = mag;
-      }
+    let defined = true;
+    for (let i = 0; i < NPTS && defined; i++) {
+      const mjd = lo + (mjdMax - lo) * i / (NPTS - 1);
+      const v = overlayValue(lcOverlay, feats, refs, band, mjd, useFlux);
+      if (v === undefined) { defined = false; break; }
       x.push(mjd);
-      y.push(isFinite(yVal) ? yVal : null);
+      y.push(v != null && isFinite(v) ? v : null);
     }
-
-    if (x.some(v => v != null)) {
-      traces.push({
-        x, y,
-        mode: 'lines',
-        name: `TDE tail ${band}`,
-        line: { color: BAND_COLORS[band] ?? '#aaa', dash: 'dashdot', width: 1.5 },
-        type: 'scatter',
-        connectgaps: false,
-        showlegend: true,
-      });
-    }
+    if (!defined || !y.some(v => v != null)) continue;
+    traces.push({
+      x, y, mode: 'lines', type: 'scatter', connectgaps: false, showlegend: true,
+      name: `${def.label} ${band}`,
+      line: { color: BAND_COLORS[band] ?? '#aaa', dash: def.dash, width: 1.5 },
+    });
   }
   return traces;
 }
@@ -2228,31 +2508,46 @@ function toggleLCOverlay(val) {
   if (currentDetections.length) renderLightCurve();
 }
 
-// Returns the period (days) for the currently selected object, or null if unavailable.
-// ZTF: Multiband_period_fid12  (bands g+r combined)
-// LSST: not yet standardised — returns null
+// Period (days) for the selected object: multiband (g+r for ZTF; band 0 for LSST)
 function getCurrentPeriod() {
   if (selectedIdx == null) return null;
   const feats = featuresData[objectsData[selectedIdx]?.oid];
   if (!feats) return null;
-  return feats['Multiband_period_fid12'] ?? null;
+  const P = feats['Multiband_period_gr'] ?? feats['Multiband_period'] ?? null;
+  return P != null && isFinite(P) && P > 0 ? P : null;
 }
 
-function renderOverlayParams(feats, params, bands, overlayName) {
-  const hasAny = bands.some(band =>
-    params.some(({ key }) => { const v = feats[`${key}_${band}`]; return v != null && isFinite(v); })
-  );
-  if (!hasAny) {
-    return `<span style="color:var(--text-muted);font-style:italic;">No ${overlayName} parameters available for this object.</span>`;
+// Parameter table for the overlay, one line per band that has any parameter
+function renderOverlayParams(feats, def) {
+  const rows = surveyBands().filter(band =>
+    def.params.some(({ key }) => { const v = feats[`${key}_${band}`]; return v != null && isFinite(v); }));
+  if (!rows.length) {
+    return `<span style="color:var(--text-muted);font-style:italic;">No ${def.label} parameters available for this object.</span>`;
   }
-  return bands.map(band => {
+  return rows.map(band => {
     const color = BAND_COLORS[band] ?? 'var(--text-secondary)';
-    const vals = params.map(({ key, label, fmt }) => {
+    const vals = def.params.map(({ key, label, fmt }) => {
       const v = feats[`${key}_${band}`];
       return `${label}=<b>${(v != null && isFinite(v)) ? fmt(v) : '—'}</b>`;
     }).join('  ');
     return `<span style="color:${color}">${band}</span>  ${vals}`;
   }).join('<br>');
+}
+
+// Is this point plottable in the current mode?
+function lcPointValue(d, useFlux, useSci) {
+  if (useFlux) {
+    const y = useSci ? d.scienceFlux : d.psfFlux;
+    const e = useSci ? d.scienceFluxErr : d.psfFluxErr;
+    return (y != null && isFinite(y)) ? { y, e: e ?? 0 } : null;
+  }
+  const y = useSci ? d.mag_corr : d.mag;
+  const e = useSci ? d.e_mag_corr : d.e_mag;
+  if (y == null || !isFinite(y)) return null;
+  if (useSci && !(e != null && e > 0 && e < 1.0)) return null;
+  // Forced photometry in magnitude space: only ≥ 3σ points are meaningful
+  if (d.kind === 'fp' && !(e != null && e < 0.36)) return null;
+  return { y, e: e ?? 0 };
 }
 
 function renderLightCurve() {
@@ -2262,10 +2557,11 @@ function renderLightCurve() {
     const color = classColorMap[obj.class_name] || '#58a6ff';
     const bandCounts = {};
     currentDetections.forEach(d => {
-      if (d.band_name) bandCounts[d.band_name] = (bandCounts[d.band_name] || 0) + 1;
+      if (d.kind === 'det' && d.band_name) bandCounts[d.band_name] = (bandCounts[d.band_name] || 0) + 1;
     });
+    const order = surveyBands();
     const countStr = Object.entries(bandCounts)
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
       .map(([band, n]) => `<span style="color:${BAND_COLORS[band] ?? 'var(--text-secondary)'}">&#x25cf;</span>${n}`)
       .join(' ');
     document.getElementById('selected-info').innerHTML =
@@ -2277,38 +2573,10 @@ function renderLightCurve() {
 
   // Show/hide parametric model parameter table
   const overlayInfoEl = document.getElementById('lc-spm-info');
-  if (lcOverlay === 'spm' && selectedIdx != null) {
+  const def = OVERLAY_DEFS[lcOverlay];
+  if (def && selectedIdx != null) {
     const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
-    const spmParams = [
-      { key: 'SPM_A',        label: 'A',     fmt: v => v.toFixed(3) },
-      { key: 'SPM_beta',     label: 'β',     fmt: v => v.toFixed(3) },
-      { key: 'SPM_t0',       label: 't₀',    fmt: v => v.toFixed(2) },
-      { key: 'SPM_gamma',    label: 'γ',     fmt: v => v.toFixed(2) },
-      { key: 'SPM_tau_rise', label: 'τ↑',    fmt: v => v.toFixed(2) },
-      { key: 'SPM_tau_fall', label: 'τ↓',    fmt: v => v.toFixed(2) },
-      { key: 'SPM_chi',      label: 'χ²',    fmt: v => v.toFixed(3) },
-    ];
-    overlayInfoEl.innerHTML = renderOverlayParams(feats, spmParams, ['g', 'r'], 'SPM');
-    overlayInfoEl.style.display = '';
-  } else if (lcOverlay === 'fleet' && selectedIdx != null) {
-    const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
-    const fleetParams = [
-      { key: 'fleet_a',   label: 'a',   fmt: v => v.toFixed(3) },
-      { key: 'fleet_w',   label: 'w',   fmt: v => v.toFixed(4) },
-      { key: 'fleet_m0',  label: 'm₀',  fmt: v => v.toFixed(2) },
-      { key: 'fleet_t0',  label: 't₀',  fmt: v => v.toFixed(2) },
-      { key: 'fleet_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
-    ];
-    overlayInfoEl.innerHTML = renderOverlayParams(feats, fleetParams, ['g', 'r'], 'FLEET');
-    overlayInfoEl.style.display = '';
-  } else if (lcOverlay === 'tde_tail' && selectedIdx != null) {
-    const feats = featuresData[objectsData[selectedIdx]?.oid] || {};
-    const tdeParams = [
-      { key: 'TDE_mag0',      label: 'm₀',  fmt: v => v.toFixed(2) },
-      { key: 'TDE_decay',     label: 'k',   fmt: v => v.toFixed(3) },
-      { key: 'TDE_decay_chi', label: 'χ²',  fmt: v => v.toFixed(2) },
-    ];
-    overlayInfoEl.innerHTML = renderOverlayParams(feats, tdeParams, ['g', 'r'], 'TDE tail');
+    overlayInfoEl.innerHTML = renderOverlayParams(feats, def);
     overlayInfoEl.style.display = '';
   } else {
     overlayInfoEl.style.display = 'none';
@@ -2316,6 +2584,7 @@ function renderLightCurve() {
 
   const useFlux = lcFluxMode;
   const useFold = lcFoldMode;
+  const useSci  = useScienceFlux;   // applies to both flux and magnitude modes
   const period  = useFold ? getCurrentPeriod() : null;
 
   // Period info bar
@@ -2323,7 +2592,7 @@ function renderLightCurve() {
   if (useFold) {
     infoEl.style.display = '';
     if (period == null) {
-      infoEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation" style="color:var(--warning);margin-right:4px;"></i>No period feature (Multiband_period_fid12) available for this object.';
+      infoEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation" style="color:var(--warning);margin-right:4px;"></i>No Multiband_period feature available for this object.';
     } else {
       infoEl.innerHTML = `<i class="fa-solid fa-rotate" style="color:var(--accent);margin-right:4px;"></i>P = <b style="color:var(--accent)">${period.toFixed(6)}</b> days &nbsp;·&nbsp; two cycles shown`;
     }
@@ -2342,54 +2611,56 @@ function renderLightCurve() {
     return;
   }
 
-  // useScienceFlux applies to both flux and magnitude modes
-  const useSci = useScienceFlux;
+  const pts = currentDetections
+    .filter(d => isFinite(d.mjd) && (lcShowFP || d.kind === 'det'))
+    .map(d => ({ d, v: lcPointValue(d, useFlux, useSci) }))
+    .filter(p => p.v);
 
-  const dets = currentDetections.filter(d => {
-    if (!isFinite(d.mjd)) return false;
-    if (useFlux) return useSci ? (d.scienceFlux != null && isFinite(d.scienceFlux))
-                               : (d.psfFlux     != null && isFinite(d.psfFlux));
-    // Magnitude mode — science: require valid e_mag_corr (same guard as normalizeDet scienceFlux)
-    return useSci ? (d.mag_corr  != null && isFinite(d.mag_corr)
-                     && d.e_mag_corr != null && d.e_mag_corr > 0 && d.e_mag_corr < 1.0)
-                  : (d.mag       != null && isFinite(d.mag));
-  });
+  // Fold: phase relative to the first plotted point, two cycles
+  const t0 = useFold && pts.length ? Math.min(...pts.map(p => p.d.mjd)) : 0;
+  const phase = mjd => (((mjd - t0) % period) + period) % period / period;
 
-  // Fold: compute phase relative to first detection, show two cycles
-  let t0 = 0;
-  if (useFold) {
-    const mjds = dets.map(d => d.mjd).filter(v => v != null && isFinite(v));
-    t0 = mjds.length ? Math.min(...mjds) : 0;
-  }
-
-  const bands = {};
-  dets.forEach(d => {
-    if (!bands[d.band_name]) bands[d.band_name] = { x:[], y:[], err:[] };
-    const yVal = useFlux ? (useSci ? d.scienceFlux  : d.psfFlux)
-                         : (useSci ? d.mag_corr    : d.mag);
-    const eVal = useFlux ? (useSci ? (d.scienceFluxErr ?? 0) : (d.psfFluxErr ?? 0))
-                         : (useSci ? (d.e_mag_corr ?? 0)     : (d.e_mag      ?? 0));
+  // One trace per (band, kind)
+  const groups = {};
+  pts.forEach(({ d, v }) => {
+    const key = `${d.band_name}|${d.kind}`;
+    const g = groups[key] ??= { band: d.band_name, kind: d.kind, x: [], y: [], err: [] };
     if (useFold) {
-      const phase = (((d.mjd - t0) % period) + period) % period / period;
-      // Two cycles: add point at phase and phase+1
-      bands[d.band_name].x.push(phase, phase + 1);
-      bands[d.band_name].y.push(yVal, yVal);
-      bands[d.band_name].err.push(eVal, eVal);
+      const ph = phase(d.mjd);
+      g.x.push(ph, ph + 1); g.y.push(v.y, v.y); g.err.push(v.e, v.e);
     } else {
-      bands[d.band_name].x.push(d.mjd);
-      bands[d.band_name].y.push(yVal);
-      bands[d.band_name].err.push(eVal);
+      g.x.push(d.mjd); g.y.push(v.y); g.err.push(v.e);
     }
   });
+  const order = surveyBands();
+  const traces = Object.values(groups)
+    .sort((a, b) => (order.indexOf(a.band) - order.indexOf(b.band)) || (a.kind === 'det' ? -1 : 1))
+    .map(g => {
+      const color = BAND_COLORS[g.band] ?? '#aaa';
+      const isFp  = g.kind === 'fp';
+      return {
+        x: g.x, y: g.y, type: 'scatter', mode: 'markers',
+        name: isFp ? `${g.band} forced` : g.band,
+        legendgroup: g.band,
+        error_y: { type:'data', array:g.err, visible:true, thickness:1, width: isFp ? 0 : 2, color },
+        marker: isFp
+          ? { color, size: 4, symbol: 'circle-open', opacity: 0.7 }
+          : { color, size: 5 },
+      };
+    });
 
-  const traces = Object.entries(bands).sort().map(([band, v]) => ({
-    x: v.x, y: v.y,
-    error_y: { type:'data', array:v.err, visible:true, thickness:1, width:2, color: BAND_COLORS[band] ?? '#aaa' },
-    mode: 'markers',
-    name: band,
-    marker: { color: BAND_COLORS[band] ?? '#aaa', size: 4 },
-    type: 'scatter',
-  }));
+  // ZTF non-detection upper limits (magnitude mode, unfolded only)
+  if (lcShowFP && !useFlux && !useFold && currentNonDets.length) {
+    const byBand = {};
+    currentNonDets.forEach(u => { (byBand[u.band_name] ??= { x: [], y: [] }); byBand[u.band_name].x.push(u.mjd); byBand[u.band_name].y.push(u.diffmaglim); });
+    Object.entries(byBand)
+      .sort(([a], [b]) => order.indexOf(a) - order.indexOf(b))
+      .forEach(([band, v]) => traces.push({
+        x: v.x, y: v.y, type: 'scatter', mode: 'markers', name: `${band} limit`, legendgroup: band,
+        marker: { color: BAND_COLORS[band] ?? '#aaa', size: 5, symbol: 'triangle-down', opacity: 0.3 },
+        hovertemplate: `${band} limit %{y:.2f}<br>MJD %{x:.3f}<extra></extra>`,
+      }));
+  }
 
   const xLabel = useFold ? 'Phase' : 'MJD';
   const yLabel = useFlux
@@ -2416,13 +2687,10 @@ function renderLightCurve() {
     showlegend: true,
   };
 
-  // Append parametric model overlay traces — only in non-folded view
-  if (!useFold) {
-    const overlayTraces =
-      lcOverlay === 'fleet'    ? computeFleetTraces(useFlux)   :
-      lcOverlay === 'tde_tail' ? computeTDETailTraces(useFlux) :
-                                 computeSPMTraces(useFlux);
-    traces.push(...overlayTraces);
+  // Parametric model overlay — only in the unfolded view, across the plotted MJD range
+  if (!useFold && pts.length) {
+    const mjds = pts.map(p => p.d.mjd);
+    traces.push(...computeOverlayTraces(useFlux, Math.min(...mjds), Math.max(...mjds)));
   }
 
   Plotly.newPlot('lc-div', traces, layout, { displayModeBar:false, responsive:true });
@@ -2446,6 +2714,12 @@ function toggleLCSciMode() {
 function toggleLCFoldMode() {
   lcFoldMode = !lcFoldMode;
   document.getElementById('lc-btn-fold').classList.toggle('active', lcFoldMode);
+  if (currentDetections.length) renderLightCurve();
+}
+
+function toggleLCForcedPhot() {
+  lcShowFP = !lcShowFP;
+  document.getElementById('lc-btn-fp').classList.toggle('active', lcShowFP);
   if (currentDetections.length) renderLightCurve();
 }
 
@@ -2669,7 +2943,11 @@ function resetUI() {
   document.getElementById('lc-div').innerHTML              = '';
   document.getElementById('lc-spinner').style.display     = 'none';
   currentDetections = [];
-  forcedPhotMjds    = {};
+  currentNonDets    = [];
+  lcLoadToken++;   // drop any in-flight LC response
+  lcShowFP   = true;
+  document.getElementById('lc-btn-fp').classList.add('active');
+  document.getElementById('feat-version').style.display = 'none';
   lcFluxMode = false;
   lcFoldMode = false;
   useScienceFlux = false;
@@ -2731,6 +3009,7 @@ function captureState() {
   if (lastQueryProb)   state.prob   = lastQueryProb;
   if (lastQueryNdet) state.ndet = lastQueryNdet;
   if (lastQueryN)    state.n   = lastQueryN;
+  if (lastQuerySample === 'random') { state.smp = 'random'; state.seed = lastQuerySeed; }
   if (Object.keys(customColors).length) state.colors = customColors;
   // Selected object and LC display state
   if (selectedIdx != null && objectsData[selectedIdx]) {
@@ -2738,6 +3017,7 @@ function captureState() {
     state.lcFlux    = lcFluxMode;
     state.lcSci     = useScienceFlux;
     state.lcFold    = lcFoldMode;
+    if (!lcShowFP) state.lcFp = false;
     if (lcOverlay) state.lcOverlay = lcOverlay;
   }
   const activeFilters = Object.fromEntries(
@@ -2766,15 +3046,17 @@ function nowStamp() {
 function downloadSampleCSV() {
   if (!objectsData.length) { setStatus('No sample loaded.'); return; }
 
-  const metaCols = ['oid', 'class_name', 'probability', 'meanra', 'meandec'];
+  const metaCols = ['oid', 'alerce_oid', 'sid', 'class_name', 'probability', 'meanra', 'meandec', 'n_det'];
   const featCols = allFeatureNames;
-  const header   = [...metaCols, ...featCols];
+  const q = s => /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;   // CSV-quote names like "Power_rate_1/2"
+  const header   = [...metaCols, ...featCols].map(q);
 
   const fmt = v => (v == null || (typeof v === 'number' && !isFinite(v))) ? '' : String(v);
 
   const rows = objectsData.map(obj => {
     const feats = featuresData[obj.oid] || {};
-    const meta  = [obj.oid, obj.class_name ?? '', fmt(obj.probability), fmt(obj.meanra), fmt(obj.meandec)];
+    const meta  = [obj.oid, obj.dbOid, obj.sid, q(obj.class_name ?? ''), fmt(obj.probability),
+                   fmt(obj.meanra), fmt(obj.meandec), fmt(obj.n_det)];
     const fvals = featCols.map(f => fmt(feats[f]));
     return [...meta, ...fvals].join(',');
   });
@@ -2790,44 +3072,41 @@ function downloadLCCSV() {
   if (!obj) return;
   const feats = featuresData[obj.oid] || {};
   const fv    = (key) => { const v = feats[key]; return (v != null && isFinite(v)) ? v : ''; };
+  const bands = surveyBands();
 
   const lines = [];
 
   // Metadata
   lines.push(`# oid,${obj.oid}`);
+  lines.push(`# alerce_oid,${obj.dbOid}`);
+  lines.push(`# sid,${obj.sid}`);
   lines.push(`# class,${obj.class_name ?? ''}`);
   lines.push(`# probability,${obj.probability ?? ''}`);
+  lines.push(`# period_days,${getCurrentPeriod() ?? ''}`);
+  lines.push('# flux unit,uJy (AB zero point 23.9)');
 
-  // Period
-  lines.push(`# period_days,${fv('Multiband_period_fid12')}`);
-
-  // All SPM parameters
-  ['g', 'r', 'i'].forEach(band => {
-    ['SPM_A', 'SPM_beta', 'SPM_t0', 'SPM_gamma', 'SPM_tau_rise', 'SPM_tau_fall', 'SPM_chi'].forEach(key => {
-      lines.push(`# ${key}_${band},${fv(`${key}_${band}`)}`);
+  // Parametric model parameters and their time references
+  ['SPM_mjd_ref', 'ulens_mjd_ref'].forEach(k => lines.push(`# ${k},${fv(k)}`));
+  Object.values(OVERLAY_DEFS).forEach(def => {
+    bands.forEach(band => {
+      const keys = def.params.map(p => p.key);
+      if (def === OVERLAY_DEFS.fleet)    keys.push('fleet_mjd_ref');
+      if (def === OVERLAY_DEFS.tde_tail) keys.push('TDE_mjd_ref');
+      if (!keys.some(k => fv(`${k}_${band}`) !== '')) return;
+      keys.forEach(k => lines.push(`# ${k}_${band},${fv(`${k}_${band}`)}`));
     });
   });
 
-  // All FLEET parameters
-  ['g', 'r', 'i'].forEach(band => {
-    ['fleet_a', 'fleet_w', 'fleet_m0', 'fleet_t0', 'fleet_chi'].forEach(key => {
-      lines.push(`# ${key}_${band},${fv(`${key}_${band}`)}`);
-    });
-  });
-
-  // All TDE tail parameters
-  ['g', 'r', 'i'].forEach(band => {
-    ['TDE_mag0', 'TDE_decay', 'TDE_decay_chi'].forEach(key => {
-      lines.push(`# ${key}_${band},${fv(`${key}_${band}`)}`);
-    });
-  });
-
-  // Data
-  lines.push('mjd,band,mag,e_mag,psfFlux_uJy,psfFluxErr_uJy,scienceFlux_uJy,scienceFluxErr_uJy');
+  // Data: detections, forced photometry, then upper limits (mag = diffmaglim)
+  lines.push('mjd,band,kind,mag,e_mag,psfFlux_uJy,psfFluxErr_uJy,mag_corr,e_mag_corr,scienceFlux_uJy,scienceFluxErr_uJy');
   const fmt = v => (v != null && isFinite(v)) ? v : '';
   currentDetections.forEach(d => {
-    lines.push([fmt(d.mjd), d.band_name ?? '', fmt(d.mag), fmt(d.e_mag),
-                fmt(d.psfFlux), fmt(d.psfFluxErr), fmt(d.scienceFlux), fmt(d.scienceFluxErr)].join(','));
+    lines.push([fmt(d.mjd), d.band_name ?? '', d.kind, fmt(d.mag), fmt(d.e_mag),
+                fmt(d.psfFlux), fmt(d.psfFluxErr), fmt(d.mag_corr), fmt(d.e_mag_corr),
+                fmt(d.scienceFlux), fmt(d.scienceFluxErr)].join(','));
+  });
+  currentNonDets.forEach(u => {
+    lines.push([fmt(u.mjd), u.band_name ?? '', 'upper_limit', fmt(u.diffmaglim), '', '', '', '', '', '', ''].join(','));
   });
 
   triggerDownload(lines.join('\n'), `alerce_lc_${obj.oid}_${nowStamp()}.csv`);
@@ -2956,21 +3235,15 @@ initResizer();
 async function checkApiConnection() {
   const indicator = document.getElementById('live-indicator');
   const label     = document.getElementById('live-label');
-  const url = currentSurvey === 'lsst'
-    ? 'https://api-lsst.alerce.online/classifier_api/classifiers'
-    : 'https://api.alerce.online/ztf/v1/classifiers';
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (resp.ok) {
-      indicator.classList.remove('no-connection');
-      indicator.title = `Live — ${currentSurvey.toUpperCase()} API reachable`;
-      label.textContent = 'Live';
-    } else {
-      throw new Error('bad status');
-    }
+    const rows = await tapQuery('SELECT TOP 1 sid FROM alerce_tap.sid_lut');
+    if (!rows.length) throw new Error('unexpected response');
+    indicator.classList.remove('no-connection');
+    indicator.title = `Live — ALeRCE TAP reachable (${await resolveTapUrl()})`;
+    label.textContent = 'Live';
   } catch (e) {
     indicator.classList.add('no-connection');
-    indicator.title = `No connection — ${currentSurvey.toUpperCase()} API unreachable`;
+    indicator.title = e instanceof TapUnreachableError ? e.message : 'No connection — ALeRCE TAP unreachable';
     label.textContent = 'Offline';
   }
 }

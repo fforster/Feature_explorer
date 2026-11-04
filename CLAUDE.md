@@ -8,7 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Everything lives in one self-contained HTML file with no build step. Load it directly in a browser.
+Everything lives in one self-contained HTML file with no build step. All data comes from the **ALeRCE multisurvey TAP service** (`https://tap.alerce.online/tap`, schema `alerce_tap`).
+
+**Running it**: the TAP service does not send CORS headers yet, so opening the file directly (`file://`) shows a "TAP not reachable" message. Run `python3 tap_proxy.py` (stdlib only) and open `http://localhost:8765/feature_explorer.html`; the proxy serves this folder and forwards `/tap/*` to `tap.alerce.online`. Once the service sends `Access-Control-Allow-Origin`, the page talks to it directly. A different endpoint can be forced with `?tap=<url>`.
 
 ### Layout (three-column, resizable)
 
@@ -29,10 +31,12 @@ The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#
 | Component | Element ID | Library |
 |---|---|---|
 | Survey toggle | `#btn-lsst` / `#btn-ztf` | — |
+| Sampling mode | `#sel-sample` (`top` / `random`) + `#n-per-class` | — |
 | Classifier dropdown | `#sel-classifier` | — |
 | Class tag multi-select | `#class-tags` / `#sel-class` | — |
 | Feature search box | `#feat-search` | — |
 | Feature list | `#feature-list` | — |
+| Feature version label | `#feat-version` | — |
 | Show Selected button | `#btn-show-selected` | — |
 | Sample CSV download | `#btn-download-sample` | — |
 | Data table button | `#btn-data-table` | — |
@@ -43,7 +47,7 @@ The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#
 | Plot toolbar | `.plot-toolbar` (`#btn-box` / `#btn-lasso` / `#btn-help`) | — |
 | Help panel | `#help-panel` | — |
 | Light curve | `#lc-div` (+ `#lc-spinner` overlay, `#lc-wrap`) | Plotly.js scatter |
-| LC display toggles | `#lc-btn-mag` / `#lc-btn-flux` / `#lc-btn-sci` / `#lc-btn-fold` | — |
+| LC display toggles | `#lc-btn-mag` / `#lc-btn-flux` / `#lc-btn-sci` / `#lc-btn-fp` / `#lc-btn-fold` | — |
 | LC overlay selector | `#lc-overlay-sel` | — |
 | LC overlay info bar | `#lc-spm-info` | — |
 | LC CSV download | `#btn-download-lc` | — |
@@ -55,39 +59,41 @@ The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#
 | Sidebar resizer | `#sidebar-resizer` | — |
 | Main/right resizer | `#resizer` | — |
 
-### ALeRCE API endpoints (per survey)
+### Data source: ALeRCE TAP
 
-**ZTF** (default survey)
-- Classifiers: `https://api.alerce.online/ztf/v1/classifiers`
-- Objects: `https://api.alerce.online/ztf/v1/objects?{params}`
-  - ZTF uses `class` (not `class_name`) and requires `ranking=1`
-  - Minimum detections parameter is `ndet` (not `n_det`)
-- Features: `https://api.alerce.online/ztf/v1/objects/{oid}/features`
-  - Returns `[{name, value, fid}]` — fid 0=global, 1=g, 2=r, 3=i
-- Light curve v1: `https://api.alerce.online/ztf/v1/objects/{oid}/lightcurve`
-- Light curve v2: `https://api.alerce.online/v2/lightcurve/lightcurve/{oid}?survey_id=ztf`
-  - v2 is fetched in parallel with v1 to obtain `mag_corr`/`e_mag_corr` for science flux/mag
+**Client** (`tapQuery(adql)` → `[{col: 'string'}]`): form-encoded POST to `…/tap/sync` with `FORMAT=csv` (a CORS "simple request", no preflight). VOTable error documents are parsed into thrown `Error`s. Always CSV, never JSON: TAP's JSON encodes 64-bit oids as numbers and JS loses precision. `parseCSV()` is a small RFC 4180 parser; `num()` converts `''` → `null`.
 
-**LSST**
-- Classifiers: `https://api-lsst.alerce.online/classifier_api/classifiers`
-- Objects: `https://api-lsst.alerce.online/object_api/list_objects?survey_id=lsst&{params}`
-  - Minimum detections parameter is `n_det`
-- Features: `https://api-lsst.alerce.online/feature_api/features?survey_id=lsst&oid={oid}`
-- Light curve: `https://api-lsst.alerce.online/lightcurve_api/lightcurve?survey_id=lsst&oid={oid}`
+**Endpoint resolution** (`resolveTapUrl()`): candidates are `?tap=` override → `TAP_DEFAULT_URL` → same-origin `./tap/sync` (the proxy). The first one answering a probe query wins and is remembered in `localStorage` (`featureExplorer.tapUrl`); on later loads it is used without probing, and `tapQuery` re-probes only if it fails with a network error. If nothing answers, `TapUnreachableError` carries the "run tap_proxy.py" message shown in the status bar.
 
-**Health check** — `checkApiConnection()` pings the classifiers endpoint for the active survey on load and every 60 s. Updates `#live-indicator` (pulsing red = live, grey static = offline).
+**Identity**: an object is `(sid, oid)` — sid 0 = ZTF, 1 = LSST DIA object (`SURVEY_CONFIG[survey].sid`; classifiers are filtered by `tid`, 0 = ZTF, 1 = Rubin). ZTF oids are the idmapper master id `(1<<55) + year·26⁷ + base-26 letters`; `ztfOidToName()` / `ztfNameToOid()` convert (BigInt). `objectsData[i].oid` is the **display id** (ZTF name or LSST diaObjectId string) used everywhere in the UI, CSVs, `featuresData` keys and share URLs; `objectsData[i].dbOid` is the int64 string used in ADQL.
+
+**Lookup tables** (`loadLookups()` → `LUT`): `classifier`, `taxonomy`, `feature_name_lut`, `feature_version_lut`, `band`, cached in `localStorage` (`featureExplorer.lut.v1`) for 12 h. Band ids: ZTF 1=g 2=r 3=i; LSST 1=g 2=r 3=i 4=z 5=y **6=u**. Helpers: `bandName(band)`, `surveyBands()`, `featureSuffix(band)`, `currentClassifier()`.
+
+**Queries** (one per step, not one per object):
+
+| Step | ADQL (sketch) |
+|---|---|
+| Sample (per class, parallel) | `SELECT TOP N p.oid, p.probability, o.meanra, o.meandec, o.n_det, o.firstmjd, o.lastmjd FROM probability p JOIN object o ON (oid, sid) WHERE p.sid, p.classifier_id, p.class_id, p.ranking = 1 [, p.probability >= …] [, o.n_det >= …]` + `ORDER BY p.probability DESC` (top) or `MOD(p.oid, K) = seed % K` with K = 97 → 13 → 1 until N rows (random) |
+| Features (chunks of 500 oids) | `SELECT oid, feature_id, band, version, feature_value FROM feature WHERE sid = … AND oid IN (…)` |
+| Class probability vector | `SELECT oid, class_id, classifier_version, probability FROM probability WHERE sid, classifier_id AND oid IN (…)` → `P_<class>` features |
+| ZTF light curve | `detection ⋈ ztf_detection` (on oid + measurement_id), `forced_photometry ⋈ ztf_forced_photometry`, `ztf_non_detection` — 3 parallel queries |
+| LSST light curve | `detection ⋈ lsst_detection`, `forced_photometry ⋈ lsst_forced_photometry` (on oid + measurement_id + sid) |
+
+ADQL dialect notes: no `RAND()`, no scalar subqueries in `WHERE` (use joins). Server cost is ~1.7 s per query and it gains little from more than ~2 concurrent queries (`TAP_CONCURRENCY = 2`); splitting the feature query into smaller chunks is *slower*. Typical: 300 ZTF objects + 236 features ≈ 13 s; a light curve ≈ 2–4 s.
+
+**Health check** — `checkApiConnection()` runs a one-row TAP query on load and every 60 s. Updates `#live-indicator` (pulsing red = live, grey static = offline).
 
 ### Data flow
 
 1. `init()` → reads URL hash; if valid state, sets `pendingRestore` and calls `fetchClassifiers()`; otherwise calls `fetchClassifiers()` directly
-2. `fetchClassifiers()` → populates `#sel-classifier` and `classifierClasses` map; if `pendingRestore`, applies classifier + classes + query params and calls `runQuery()`
+2. `fetchClassifiers()` → `loadLookups()`, populates `#sel-classifier` (classifiers with the survey's `tid`, ordered by `SURVEY_CONFIG.priorities`) and `classifierClasses`; if `pendingRestore`, applies classifier + classes + query params and calls `runQuery()`
 3. `onClassifierChange()` → populates `#sel-class`
-4. `runQuery()` → fetches object list for each selected class, merges, optionally shuffles and samples N; calls `fetchAllFeatures()`
-5. `fetchAllFeatures(oids)` → fetches features in parallel batches of 10; `pivotFeatures()` flattens `[{name, value, fid}]` into `{name_band: value}` dicts; stored in `featuresData[oid]`
-6. `buildFeatureListUI()` → renders feature rows from `allFeatureNames`; if `pendingRestore`, applies feature show state, transforms, colors, then calls `buildPairPlot()` and optionally `onPointSelected()`
+4. `runQuery()` → one sample query per selected class (parallel), merges/dedupes by `dbOid`, then `fetchAllFeatures(objectsData, clf)`
+5. `fetchAllFeatures()` → feature + probability-vector queries per 500-oid chunk; pivots long rows into `featuresData[oid][name + featureSuffix(band)]`; sets `allFeatureNames` and the `#feat-version` label (version name → number of objects)
+6. `buildFeatureListUI()` → renders feature rows; default axes come from `computeDefaultFeatures()`; if `pendingRestore`, applies feature show state, transforms, colors, then calls `buildPairPlot()` and optionally `onPointSelected()`
 7. `buildPairPlot()` → applies `featureFilters`, builds `plotObjIdx` mapping, then builds a manual lower-triangular grid of Plotly subplots; KDE fills on diagonal, scatter off-diagonal. Alternative: `buildUmapPlot()` → runs `_runUmap()` for a 2D UMAP embedding.
 8. `onPointSelected(idx, fromView)` → cross-highlights in the non-originating view via `highlightPoints()` / `highlightUmapPoint()`, updates `#selected-info`, then `loadObjectDetail()`
-9. `loadObjectDetail(obj)` → fetches LC v1 and (ZTF only) v2 in parallel; cross-matches v2 detections by `candid` to copy `mag_corr`/`e_mag_corr`; extracts forced-photometry earliest-MJD per band into `forcedPhotMjds` (for FLEET anchor); normalizes via `normalizeDet()`; renders LC; calls `updateAladin()`
+9. `loadObjectDetail(obj)` → `updateAladin()`, then `fetchLightCurve(obj)` (TAP); normalizes rows with `ztfPoint()` / `lsstPoint()` into `currentDetections` (kinds `det` and `fp`) and `currentNonDets`; renders LC. `lcLoadToken` discards responses superseded by a newer click.
 10. `updateAladin(ra, dec, oid)` → lazy-initializes Aladin Lite; reuses instance via `aladinInstance.gotoRaDec()`
 
 ### State variables
@@ -95,11 +101,12 @@ The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#
 | Variable | Type | Purpose |
 |---|---|---|
 | `currentSurvey` | string | `'ztf'` (default) or `'lsst'` |
-| `objectsData` | array | Object metadata from list endpoint |
-| `featuresData` | `{oid: {name: value}}` | Pivoted feature values |
+| `LUT` | object | Lookup tables (classifiers, classes per classifier, feature names/versions, bands per sid) |
+| `objectsData` | array | `{oid (display), dbOid, sid, class_name, probability, meanra, meandec, n_det, firstmjd, lastmjd}` |
+| `featuresData` | `{oid: {name: value}}` | Pivoted feature values (keyed by display oid) |
 | `selectedClasses` | string[] | Currently added classes |
 | `classColorMap` | `{class: hex}` | Color per class for plot |
-| `allFeatureNames` | string[] | Union of all feature keys |
+| `allFeatureNames` | string[] | Union of all feature keys (incl. `P_<class>`) |
 | `featureTransforms` | `{name: 'log'\|'asinh'\|null}` | Per-feature axis transform |
 | `featureFilters` | `{name: {min, max}}` | Per-feature value range filter applied before building the pair plot |
 | `plotObjIdx` | number[]\|null | Maps plot-space Plotly point index → `objectsData` global index; `null` = identity (no filter active) |
@@ -107,10 +114,13 @@ The main column has a view-tab bar (`.view-tabs`) with `#btn-view-pairplot` / `#
 | `scatterTraceIdxs` | number[] | Plotly trace indices for multi-trace `selectedpoints` |
 | `lcFluxMode` | bool | `false`=magnitude, `true`=flux (µJy) |
 | `useScienceFlux` | bool | `false`=difference image, `true`=science/corrected image |
-| `lcFoldMode` | bool | Phase-fold light curve by `Multiband_period_fid12` |
-| `lcOverlay` | string\|null | Active parametric overlay: `null`, `'spm'`, `'fleet'`, or `'tde_tail'` |
-| `currentDetections` | array | Cached normalized detections for selected object |
-| `forcedPhotMjds` | `{band: mjd}` | Earliest forced-photometry MJD per band (flux > 1 µJy) — anchors FLEET per-band time reference |
+| `lcFoldMode` | bool | Phase-fold light curve by `Multiband_period` |
+| `lcShowFP` | bool | Show forced photometry and ZTF upper limits (`#lc-btn-fp`) |
+| `lcOverlay` | string\|null | Active parametric overlay: `null`, `'spm'`, `'fleet'`, `'tde_tail'` or `'ulens'` |
+| `currentDetections` | array | Normalized LC points (`kind: 'det' \| 'fp'`) for the selected object |
+| `currentNonDets` | array | ZTF upper limits `{mjd, band_name, diffmaglim}` |
+| `lcLoadToken` | number | Incremented per LC load; stale responses are dropped |
+| `lastQuery*` | strings | `Prob`, `Ndet`, `N`, `Sample`, `Seed` — params that produced the current sample (for share URLs) |
 | `pendingRestore` | object\|null | Decoded URL state waiting to be applied |
 | `aladinInstance` / `aladinCat` | Aladin objects | Reused across selections |
 | `selectedIdx` | number | Index into `objectsData` of highlighted point |
@@ -137,19 +147,18 @@ Each row in `#feature-list` has this structure (left to right):
 
 **Feature search** (`#feat-search`, `filterFeatureList(query)`): substring match by default; supports glob patterns (`*`, `?`) which are converted to anchored regex.
 
-### Feature normalization (`pivotFeatures`)
+### Feature naming (`fetchAllFeatures`)
 
-ZTF band suffixes: fid 0 → `""`, 1 → `"_g"`, 2 → `"_r"`, 3 → `"_i"`  
-Handles three response formats: bare array `[{name, value, fid}]`, wrapped `{features: [...]}`, and dict `{name: value}`.
+`alerce_tap.feature` is long format (`oid, sid, feature_id, band, version, feature_value`) and keeps only the **latest** value per object and feature, so there is no version selector; `#feat-version` shows which extractor versions the sample contains (LSST samples often mix versions). Names come from `feature_name_lut` (per sid). Band suffix via `featureSuffix(band)`: `0` → `""`, single band → `_g`, `_r`, …, multi-digit band sets → concatenated letters (`12` → `_gr`, `23` → `_ri`, `61` → `_ug`). The active classifier's full probability vector is added as `P_<class>`.
 
-### Detection normalization (`normalizeDet`)
+**Default axes** (`computeDefaultFeatures()`): the first `DEFAULT_FEATURE_MAX` names of `DEFAULT_FEATURE_PREFS` populated for ≥ 50 % of the sample (many variability features exist only for a subset of objects), topped up to 3 with the best-covered features (excluding `*_mjd_ref`, `Coordinate_*`, `P_*`).
 
-Unifies field names across ZTF and LSST and computes flux fields:
-- `mjd`: `mjd` → `midpointMjdTai` → `midPointTai`
-- `mag` / `e_mag`: difference-image magnitude — `mag` → `psf_mag` → `magpsf` (never `mag_corr`)
-- `band_name`: `band` field (LSST) or `fidMap[fid]` (ZTF)
-- `psfFlux` / `psfFluxErr`: difference flux (µJy) — from API if present, else derived from `mag`
-- `scienceFlux` / `scienceFluxErr`: science (corrected) flux — from `mag_corr`/`e_mag_corr` when `e_mag_corr > 0 && e_mag_corr < 1.0`; `e_mag_corr = 100.0` is ALeRCE's unreliable-correction sentinel
+### Light curve points (`ztfPoint` / `lsstPoint`)
+
+Each point: `{kind: 'det'|'fp', mjd, band_name, mag, e_mag, psfFlux, psfFluxErr, mag_corr, e_mag_corr, scienceFlux, scienceFluxErr}` (fluxes in µJy, `ABZP = 23.9`).
+- **ZTF** (magnitudes): detections use `magpsf`/`sigmapsf`, forced photometry `mag`/`e_mag`; `psfFlux = sign(isdiffpos) × 10^((23.9 − mag)/2.5)`. Forced-phot points only get a `mag` when the flux is positive. Science values from `magpsf_corr`/`sigmapsf_corr` (detections) or `mag_corr`/`e_mag_corr` (forced phot), kept only when `0 < e_mag_corr < 1` (`100` is ALeRCE's unreliable-correction sentinel).
+- **LSST** (fluxes in **nJy** → ÷1000): `psfflux`/`psffluxerr` (difference) and `scienceflux`/`sciencefluxerr` (science); magnitudes derived where flux > 0.
+- **Upper limits** (ZTF only): `ztf_non_detection.diffmaglim`, drawn as faint down-triangles in unfolded magnitude mode.
 
 ### Light curve display modes
 
@@ -160,15 +169,17 @@ Four combinations of two independent toggles:
 | **Mag** | `mag` / `e_mag` | `mag_corr` / `e_mag_corr` |
 | **Flux** | `psfFlux` / `psfFluxErr` | `scienceFlux` / `scienceFluxErr` |
 
-Science magnitude mode applies the same `e_mag_corr < 1.0` validity filter as science flux mode to exclude unreliable corrections.
+Science magnitude mode applies the same `e_mag_corr < 1.0` validity filter as science flux mode to exclude unreliable corrections. In magnitude mode forced-photometry points are shown only at ≥ 3σ (`e_mag < 0.36`); flux mode shows them all. One Plotly trace per (band, kind): detections filled, forced photometry open circles (`lcPointValue()` decides what is plottable).
 
-Phase folding (ZTF): uses `Multiband_period_fid12` from `featuresData`; phase = `(((mjd - t0) % P) + P) % P / P`; two cycles shown by appending each point at `phase + 1`.
+Phase folding: uses `Multiband_period_gr` (ZTF) or `Multiband_period` (LSST, band 0) via `getCurrentPeriod()`; phase = `(((mjd - t0) % P) + P) % P / P`; two cycles shown by appending each point at `phase + 1`.
 
 **Y-axis clipping (magnitude mode)**: if any trace value exceeds 27, the y-axis is clipped to `[27, yMin − 0.3]` (range is reversed since larger mag = fainter). Otherwise `autorange: 'reversed'` is used. This prevents overlay extrapolations from collapsing the scale.
 
 ### Parametric model overlays
 
-Selected via `#lc-overlay-sel` dropdown. Active overlay is stored in `lcOverlay`. When an overlay is active, a parameter table is shown in `#lc-spm-info`. Overlays are not drawn in fold mode.
+Selected via `#lc-overlay-sel` dropdown. Active overlay is stored in `lcOverlay`. Definitions (label, line dash, parameter table) live in `OVERLAY_DEFS`; `overlayValue()` evaluates a model, `computeOverlayTraces()` draws one 200-point line per survey band over the plotted MJD range. When an overlay is active, a parameter table is shown in `#lc-spm-info` (bands without parameters are omitted). Overlays are not drawn in fold mode.
+
+**Time references are stored as features** (checked against the photometry to ≤ 0.005 d; `overlayRefs()`): `SPM_mjd_ref` (first observation, any band), `fleet_mjd_ref_{band}` (first point with flux > 1 µJy, incl. forced phot), `TDE_mjd_ref_{band}` (brightest point incl. forced phot), `ulens_mjd_ref` (first point with e_mag < 1). Older feature versions (some LSST objects) lack them, so each falls back to the same quantity derived from `currentDetections` (detections + forced photometry).
 
 #### SPM (`lcOverlay === 'spm'`)
 
@@ -179,8 +190,8 @@ F(t) = A × (1 − β^((t−t₀)/γ)) / (1 + exp(−(t−t₀)/τ_rise))  [rise
 ```
 Smoothly blended at `t₁ = t₀ + γ` via a sigmoid.
 
-- **Time**: `t = mjd − first_mjd_global` (global across all bands)
-- **Units**: `SPM_A` is stored in mJy (extractor multiplied µJy observations by 0.001). Must multiply by 1000 (mJy → µJy) before display. `ABZP = 23.9`.
+- **Time**: `t = mjd − SPM_mjd_ref`
+- **Units**: `SPM_A` is stored in mJy for both ZTF and LSST (extractor multiplied µJy observations by 0.001; checked against LSST peak fluxes). Must multiply by 1000 (mJy → µJy) before display. `ABZP = 23.9`.
 - **Parameters**: `SPM_A_{band}`, `SPM_beta_{band}`, `SPM_t0_{band}`, `SPM_gamma_{band}`, `SPM_tau_rise_{band}`, `SPM_tau_fall_{band}`, `SPM_chi_{band}`
 - **Line style**: dashed
 
@@ -191,7 +202,7 @@ Model (fleet_model in tde_extractor.py):
 mag(t_norm) = exp(w × (t_norm − t₀)) − a × w × (t_norm − t₀) + m₀
 ```
 
-- **Time**: `t_norm = mjd − first_mjd_in_band` — per-band normalization. `first_mjd_in_band` is the earliest of (a) alert detections with `psfFlux > 1 µJy` and (b) forced-photometry points with `psfFlux > 1 µJy` (via `forcedPhotMjds`, populated in `loadObjectDetail` from the v2 `forced_photometry` key). This matches the extractor's reference, which forced-phot frequently pushes earlier than the first alert.
+- **Time**: `t_norm = mjd − fleet_mjd_ref_{band}` (per-band reference)
 - **Units**: output is directly in magnitudes (fit was done on diff-image magnitudes); flux mode converts via `10^((23.9 − mag) / 2.5)`
 - **Parameters**: `fleet_a_{band}`, `fleet_w_{band}`, `fleet_m0_{band}`, `fleet_t0_{band}`, `fleet_chi_{band}`
 - **Line style**: dotted
@@ -203,11 +214,23 @@ Model (TDETailExtractor in tde_extractor.py) — linear in log-time, post-peak o
 mag(t) = TDE_mag0 + TDE_decay × 2.5 × log₁₀(t − t_peak + 40)
 ```
 
-- **Time**: `t = mjd`, `t_peak` = MJD of the brightest (min mag) detection in the band — **derived from `currentDetections`** (not stored as a feature). Filtered to `e_mag < 1.0` and `mag < 30` matching the extractor.
+- **Time**: `t = mjd`, `t_peak = TDE_mjd_ref_{band}` (brightest point in the band, forced photometry included)
 - **Valid range**: `t > t_peak` only; grid starts at `t_peak`
 - **Units**: output is in diff-image magnitudes; flux mode converts via `10^((23.9 − mag) / 2.5)`
 - **Parameters**: `TDE_mag0_{band}`, `TDE_decay_{band}`, `TDE_decay_chi_{band}`
 - **Line style**: dash-dot
+
+#### Microlensing (`lcOverlay === 'ulens'`)
+
+Model (ulens_extractor.py) — point-lens magnification with blending, in magnitudes:
+```
+u(t) = √(u₀² + ((t − t₀)/t_E)²),  A = (u² + 2) / (u √(u² + 4))
+mag(t) = m₀ − 2.5 log₁₀(f_s (A − 1) + 1)
+```
+
+- **Time**: `t = mjd − ulens_mjd_ref`
+- **Parameters**: `ulens_u0_{band}`, `ulens_tE_{band}`, `ulens_fs_{band}`, `ulens_t0_{band}`, `ulens_mag0_{band}`, `ulens_chi_{band}`
+- **Line style**: long dash
 
 ### Pair plot architecture
 
@@ -254,8 +277,8 @@ Floating toolbar `.plot-toolbar` over the main column:
 
 All downloads go through `triggerDownload(content, filename)`; `nowStamp()` provides a UTC timestamp suffix (`YYYY-MM-DD_HHMMSS`).
 
-- **`downloadSampleCSV()`** (`#btn-download-sample`) — full loaded sample: `oid, class_name, probability, meanra, meandec, …allFeatureNames`. Filename `alerce_sample_{classifier}_{stamp}.csv`.
-- **`downloadLCCSV()`** (`#btn-download-lc`) — detections of the currently selected object. The selected overlay's per-band parameters are included as `# ` header comments above the CSV rows. Filename includes `{oid}` and `{stamp}`.
+- **`downloadSampleCSV()`** (`#btn-download-sample`) — full loaded sample: `oid, alerce_oid, sid, class_name, probability, meanra, meandec, n_det, …allFeatureNames` (names containing `/` etc. are CSV-quoted). Filename `alerce_sample_{classifier}_{stamp}.csv`.
+- **`downloadLCCSV()`** (`#btn-download-lc`) — detections, forced photometry (`kind=fp`) and ZTF upper limits (`kind=upper_limit`, `mag` = diffmaglim) of the selected object. Metadata, period, and every overlay's per-band parameters plus `*_mjd_ref` times are included as `# ` header comments. Filename includes `{oid}` and `{stamp}`.
 - **`downloadDTCSV()`** — subset table (selected features only) in current sort order.
 
 ### Loading states / spinners
@@ -266,7 +289,7 @@ All downloads go through `triggerDownload(content, filename)`; `nowStamp()` prov
 
 ### URL state sharing
 
-`captureState()` serializes: survey, classifier, classes, shown features (show button state), transforms, query params (prob, ndet, sample size), feature filters, custom colors, selected OID, and LC display state (flux mode, sci mode, fold mode, overlay) → JSON → `btoa(encodeURIComponent(...))` → `location.hash`. Query params (`prob`, `ndet`, `sample`, `n`) are captured from the `lastQuery*` globals that `runQuery()` snapshots, not from the input values at share time — this preserves the params that produced the current sample even after the inputs are edited.
+`captureState()` serializes: survey, classifier, classes, shown features (show button state), transforms, query params (prob, ndet, sample size, sampling mode `smp` + hash `seed` for random samples), feature filters, custom colors, selected OID (display id), and LC display state (flux mode, sci mode, fold mode, `lcFp`, overlay) → JSON → `btoa(encodeURIComponent(...))` → `location.hash`. Query params (`prob`, `ndet`, `sample`, `n`) are captured from the `lastQuery*` globals that `runQuery()` snapshots, not from the input values at share time — this preserves the params that produced the current sample even after the inputs are edited.
 
 `shareState()` (share button `#btn-share`) encodes current state into the hash and copies the full URL to clipboard.
 
@@ -288,6 +311,7 @@ Loaded asynchronously from `aladin.cds.unistra.fr`. `updateAladin()` polls for `
 - Font Awesome 6.5 — icons
 - Aladin Lite v3 — sky view (async load)
 - `umap-js@1.3.3` — loaded on demand via `esm.sh` when UMAP is first run
+- ALeRCE TAP (`tap.alerce.online`) — all data; `tap_proxy.py` (Python stdlib) until the service sends CORS headers
 
 ## CSS gotchas
 
@@ -297,4 +321,4 @@ Loaded asynchronously from `aladin.cds.unistra.fr`. `updateAladin()` polls for `
 
 ## Reference
 
-See `../ALeRCE_explorer/alerce_explorer.html` for more advanced ALeRCE API usage patterns (ZTF/LSST field-name quirks, forced photometry, E(B-V) fetching, HiPS survey probing, spec-z overlays, live indicator pattern).
+TAP schema reference: `../alerce-book/07-database.md` and the browsable `https://tap.alerce.online/browse/alerce_tap/multisurvey_lowercase`. See `../ALeRCE_explorer/alerce_explorer.html` for older REST API usage patterns (ZTF/LSST field-name quirks, forced photometry, E(B-V) fetching, HiPS survey probing, spec-z overlays, live indicator pattern).
